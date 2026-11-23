@@ -3,6 +3,9 @@ name = "dk"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "dk 的 CLI：init / sweep / map / get / put / check，只做参数与输出"
 
 [[bin]]
 name = "dk"

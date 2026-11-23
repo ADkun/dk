@@ -3,6 +3,9 @@ name = "dk-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "dk 的核心：卡片格式、存储、检索、体检与 MCP 壳，所有工具行为只在这里定义"
 
 [dependencies]
 blake3.workspace = true

@@ -144,7 +144,8 @@ S 的双问铁律：能否从 path+F+R+A 推出？能推出就不写。不写会
 入参：`{ task?: string, hints?: string[], paths?: string[], dir?: string, level?: "l0"|"l1"|"l2", k?: number, allow_partial?: boolean }`
 `k` 是返回张数，默认 6。
 
-- 有 `paths`：跳过检索，直接返回这些路径的卡 + R 邻居（agent 先 rg 再上卡的主路径）
+- 有 `paths`：跳过检索，按给定路径取卡（没有卡的路径进 `uncarded`），不扩散邻居
+  —— 这是「agent 先自己 rg，再带路径来上卡」的主路径：它知道要哪个文件，用不着图扩散
 - 有 `task`：词面召回 → 命中后 R 扩散 → 按 `level` 渲染
 - 有 `dir`：返回该目录切片
 - 都没有：返回目录树
@@ -154,7 +155,17 @@ S 的双问铁律：能否从 path+F+R+A 推出？能推出就不写。不写会
   静默退回默认值会让调用方以为自己问过了（审查 G1）
 - 未知 `level` **报错**，不静默降级
 
-返回体固定带 `{ mode, query, level, count, cards|dirs, confidence, hint, coverage }`。`confidence` 三档：
+返回体按模式而异——只有**任务检索**那一路是固定形状：
+
+| 模式 | 返回体 |
+|---|---|
+| 有 `task` | `{ mode:"task", query, level, count, cards \| dirs, confidence, hint }` |
+| 有 `paths` | `{ mode:"paths", cards:[渲染行], uncarded:[未建卡路径] }` |
+| 有 `dir` | `{ mode:"dir", dir, count, cards:[渲染行] }` |
+| 都没有 | `{ mode:"tree", cards, dirs:[{ dir, cards }], hint }` |
+
+`dirs` 里的 `dir` 在 tree 模式**目录带尾斜杠、顶层文件不带**（渲染层不要再补一个，否则出 `crates//`）。
+`confidence` 三档（只属于任务检索）：
 
 | 值 | 条件 |
 |---|---|
@@ -166,7 +177,10 @@ S 的双问铁律：能否从 path+F+R+A 推出？能推出就不写。不写会
 
 ### dk_get
 入参：`{ paths: string[] }`
-返回：`[{ path, state: fresh | stale | missing | uncarded, card, siblings: [{ path, F }] }]`。R 邻居按图入度截断至 5 条，每条只给一行摘要（要给全卡就再 `dk_get` 一次，按需付费）。
+返回：`{ count, cards: [{ path, state: fresh | stale | uncarded | missing, card, siblings: [{ path, F }] }] }`。
+
+`siblings` 是**同目录兄弟，不是 R 邻居**：命中一个文件后这一族往往要一起动。最多 5 条，每条只给一行摘要
+（要给全卡就再 `dk_get` 一次，按需付费）。路径没有卡时给 `state:"uncarded"` 加一句 hint，不报错。
 **不返回源码**，只返回路径与行数，源码由 agent 自己读。
 
 ### dk_put
@@ -179,7 +193,7 @@ S 的双问铁律：能否从 path+F+R+A 推出？能推出就不写。不写会
 **写入前一次性过全部硬门（§8）**，任一项不过就整条拒收并写进 `rejected`——绝不「先写进去再让 check 报错」。一个普通文件名（`img/logo@2x.png`）能永久弄坏索引，这不是边缘情况。
 
 ### dk_check
-CLI，不进模型流程。全量并行体检，输出六类问题：坏行 / 过期 / 未建卡 / 失联（有卡但文件不在受管范围）/ 坏 R / 重复，外加一条告警：`.dkignore` 坏模式。
+六个工具之一（CLI / `dk serve` / `dk mcp` / 插件壳都注册它，壳里没有第二份判断）。全量并行体检，输出六类问题：坏行 / 过期 / 未建卡 / 失联（有卡但文件不在受管范围）/ 坏 R / 重复，外加一条告警：`.dkignore` 坏模式。
 **未建完时非零退出**（漏建必须可见）。
 
 ### 工作目录与仓库根
@@ -441,7 +455,7 @@ CLI 的 `dk get/map/put/sweep` 保留给人和脚本；模型侧一律走 `serve
 
 三条实现约定：
 - 工具名与参数三处对齐（`serve.rs` 的 `handle`、`mcp.rs` 的 `tool_specs`、`package/index.js`
-  的 `SPECS`）。改一处必须改另两处，`_tmp/dk-bench/plugin-e2e.mjs` 会比对名字。
+  的 `SPECS`）。改一处必须改另两处，`package/test/e2e.mjs` 会比对名字。
 - 工具执行失败（未知工具、参数不对、dk 报错）走 `isError:true` 的**内容**而不是 JSON-RPC error：
   模型能看见错误文本并改参数，而 error 帧常被宿主吞掉或直接中断对话。
 - 协议版本协商：客户端要求的版本在支持列表里就照它，否则回最新一版。
@@ -458,7 +472,8 @@ CLI 的 `dk get/map/put/sweep` 保留给人和脚本；模型侧一律走 `serve
 
 ### 第 1.5 层：实现级实测（已完成，M1–M2）
 
-对象：`_tmp/dk-bench/adg`（`dsh-adg-ptc` 的拷贝，去掉 .git），524 个受管文件、9.9 MiB。
+对象：`dsh-adg-ptc` 的一个拷贝（去掉 .git），524 个受管文件、9.9 MiB。**它不在本仓库内**，本节的口径无法在本仓库复现——
+留着是因为它解释了检索参数怎么定的，不是可复跑的基准。
 
 - **迁移无损**：把该仓库 147 张 AOCI 卡机械转成 dk 行（剥 `code:` 前缀、补 blake3），147/147 全部写入、0 拒收。
   dk 全量 66159 B ≈ 22053 token（AOCI 原文 22373 token），单卡平均 448 B ≈ 149 token。
@@ -477,7 +492,9 @@ CLI 的 `dk get/map/put/sweep` 保留给人和脚本；模型侧一律走 `serve
 - **纪律闭环演练**：改 `crates/dk/src/main.rs` 后 `dk check` 报 `过期 1`，`dk_put` 重写该卡后回到 `一致`；
   `dk_get` 对改动过的 `browser/lib/cdp.mjs` 报 `state: "stale"`，写回后消失。
 - **自举**：dk 仓库自身 18 个受管文件 18 张卡，`dk check` 一致，全量 2083 token、默认披露 810 token。
-- **单测**：23 个，覆盖行格式往返与篡改、锁互斥、CAS 语义、skip→.dkignore、覆盖率与过期判定。
+- **单测**：当时 23 个，覆盖行格式往返与篡改、锁互斥、CAS 语义、skip→.dkignore、覆盖率与过期判定。
+- **回看（v0.2.7 现状，覆盖上面的快照数字）**：29 个受管文件 29 张卡、单测 52 个、e2e 27 条断言、
+  `dk tokens` ≈ 4854 token、默认披露 ≈ 1116 token。上面 18/18、2083 token、23 个都是当时的读数，不要再当现状引用。
 - **性能**（release 构建，单机 Windows）：
 
   | 操作 | 规模 | 耗时 |
@@ -528,9 +545,9 @@ CLI 的 `dk get/map/put/sweep` 保留给人和脚本；模型侧一律走 `serve
 MCP 壳（`dk mcp`）冒烟：喂 `initialize` / `notifications/initialized` / `tools/list` / `tools/call` / `ping` 五帧，
 版本协商按客户端要求回 `2025-03-26`，通知帧不回包，`tools/list` 出六个工具。
 
-DSH 插件壳用 fake-ctx 跑真链路（`_tmp/dk-bench/plugin-e2e.mjs`，不启动 DSH，按插件契约伪造
+DSH 插件壳用 fake-ctx 跑真链路（`package/test/e2e.mjs`，不启动 DSH，按插件契约伪造
 `ctx.tools.register` / `ctx.effect` / `ctx.get('workingDirectory')` / `ctx.get('systemPrompt')`），
-**26 条断言全过**：
+**27 条断言全过**：
 
 | 组 | 断言 |
 |---|---|
@@ -564,8 +581,8 @@ DSH 插件壳用 fake-ctx 跑真链路（`_tmp/dk-bench/plugin-e2e.mjs`，不启
 | G7 | `stderr` 一律按 UTF-8 解 | 非 UTF-8 程序（`cmd.exe`）出满屏 U+FFFD | 检测到替换字符时退回单字节解码 |
 | G8 | `hints` 用 `anyOf` | `anyOf` 不在 DSH schema 子集里，走 `defineTool` 会 `UNSUPPORTED_SCHEMA` | 三处统一改成 `string[]`，服务端仍宽容收单串 |
 
-新增回归脚本 `_tmp/dk-bench/review-regress.mjs`，**10 条断言全过**（上溯 / 换 root 20 次 / 三处参数
-严格 / 超时文案 / 目录不存在 / 中止 / 批量帧）。原 26 条 e2e 断言仍全过。
+新增回归脚本（当时的临时件，未入库；同一批断言后来并入 `package/test/e2e.mjs` 与 `package/test/prompt.test.mjs`），
+**10 条断言全过**（上溯 / 换 root 20 次 / 三处参数严格 / 超时文案 / 目录不存在 / 中止 / 批量帧）。原 26 条 e2e 断言当时仍全过（现 27 条）。
 
 ### 第 2 层：端到端（未做）
 
@@ -588,10 +605,10 @@ DSH 插件壳用 fake-ctx 跑真链路（`_tmp/dk-bench/plugin-e2e.mjs`，不启
 ## 11. 里程碑
 
 - **M0** workspace 骨架 + `card.rs` + `store.rs`，能读写自洽的 `.dk/map.txt` ✔
-- **M1** `init / sweep / put / get / check` 跑通，可对一个真实仓库从零建到 100% ✔（自举 18/18）
+- **M1** `init / sweep / put / get / check` 跑通，可对一个真实仓库从零建到 100% ✔（当时自举 18/18，现 29/29）
 - **M2** `tokenize.rs + search.rs`，`dk map` 召回达到基准水平 ✔（cov@5 75.0%）
-- **M2.5** `dk serve`（NDJSON 六工具）+ `AGENTS.md` 块 + `/dk` SKILL ✔（CLI 八子命令齐备）
-- **M3** MCP 壳（供非 DSH harness）+ DSH 插件三职责（系统提示词 / 内置拉起 / 原生工具名）✔（fake-ctx 26 断言 + 审查回归 10 断言）
+- **M2.5** `dk serve`（NDJSON 六工具）+ `AGENTS.md` 块 + `/dk` SKILL ✔（CLI 九子命令齐备：多一个 `tokens`）
+- **M3** MCP 壳（供非 DSH harness）+ DSH 插件三职责（系统提示词 / 内置拉起 / 原生工具名）✔（fake-ctx 27 断言 + 审查回归 10 断言）
 - **M4** 分片 + 大仓库压测（万级文件）；分层创作（`dk_sweep` 三段式的规模化）
 
 ---
@@ -608,8 +625,9 @@ DSH 插件壳用 fake-ctx 跑真链路（`_tmp/dk-bench/plugin-e2e.mjs`，不启
 | 2026-11-23 | v0.2：A5「提示词不出现 harness 工具名」 | 换 harness 就全错，提示词必须只描述动作 |
 | 2026-11-23 | v0.2.1：按对抗审查修实现，并把 SPEC 改成「已实现 / M4 未实现」两栏制；删掉 RRF 与四通道（`rrf()` 是死代码）；二进制判定口径拆成「扩展名排除 + 内容打 flag」 | 文档写未实现的设计 = 文档债，比缺文档更危险。审查用 12 组破坏实验证明「一个普通文件名就能永久弄坏索引」 |
 | 2026-11-23 | v0.2.1：新增零命中的字面兜底（`char_fallback`），`confidence` 三档 | 单字查询全灭；但实测 147 条中文短查询触发率 0%，故它只是止损，不是能力，必须标明 |
-| 2026-11-24 | v0.2.2：M3 落地——新增 `crates/dk-core/src/mcp.rs`（MCP 壳）与 `package/`（DSH 插件）；工具失败走 `isError` 内容而非 JSON-RPC error；§9.3 的「200 行」改为实测 335 行（其中 190 行是 schema） | 三种 harness 必须共用 `serve::handle` 这一份逻辑，否则迟早出现「CLI 能写、MCP 不能写」的分裂；行数上限是估的，实测就该改数字 |
+| 2026-11-24 | v0.2.2：M3 落地——新增 `crates/dk-core/src/mcp.rs`（MCP 壳）与 `package/`（DSH 插件）；工具失败走 `isError` 内容而非 JSON-RPC error；§9.3 的「200 行」改为实测 335 行（其中 190 行是 schema；后续版本见 §12 末行） | 三种 harness 必须共用 `serve::handle` 这一份逻辑，否则迟早出现「CLI 能写、MCP 不能写」的分裂；行数上限是估的，实测就该改数字 |
 | 2026-11-23 | v0.2.6：系统提示词的注入改成依赖注入（`ctx.inject(['systemPrompt'], …)`），新增 `package/test/prompt.test.mjs` 四条断言（含「服务晚到也要补上」） | 旧写法用 `ctx.get('systemPrompt')` 探一次，apply 早于 dsh-system-prompt 时静默跳过且永不重试——这正是「有时注入有时没有」的成因。对照 dsh-adg-ptc 的 skill-inject：它用静态 inject 等依赖；本插件是 host 侧、又不该硬性要求 systemPrompt 在场，故用惰性注入 |
 | 2026-11-23 | v0.2.5：块位置**维持追加到文件末尾**，不改「写开头」或「独立文件 + 引用」 | 用户拍板 A。已知能吞块的三种构造（未闭合 ``` / ~~~ / 未闭合 HTML 注释，含 BOM 开头行）已挡住；改写到开头会顶掉用户原有排版，独立成文件则 AGENTS.md 还要留一行引用、等于两处维护。剩余风险是未知的 Markdown 构造吞块——那时 `dk check` 仍报 `present` 但人读不到，只能靠人发现 |
 | 2026-11-24 | v0.2.4：L1 受管块真正落地（`dk init` 幂等写 AGENTS.md、`--no-agents` 退出、`dk check` 只报 present/stale/missing/broken/unreadable 且不计入 is_clean）；验收后加固：只认恰好一对标记（Broken 一律拒写、原样不动）、比对前归一换行并按文件主流换行写回、末尾有未闭合围栏时不追加、`agents` 只认布尔、AGENTS.md 读不了只报 unreadable | 缺 END 时按错的边界改写会吞掉用户正文；块的状态若取决于别处的换行，同一份文件会反复报「旧版」；半对标记与编码问题只能停下交给人，不能猜 |
 | 2026-11-23 | v0.2.7：GUIDANCE 与 `skills/dk/SKILL.md` 的首句都改成**条件式**——「若这个仓库有 .dk/map.txt，…」；两条通道的末句**故意不同**：GUIDANCE 收「没有索引时不要擅自建，先问用户」，SKILL 收「还没有索引就先 `dk_init` 建一份」 | 系统提示词是全局的：任何任务（含非代码仓库、纯文档、纯聊天）都会看到它，写成陈述句「这个仓库有代码索引」在那些场景里是假话，写成「没有就先 dk_init」则是授权模型在下载夹、临时夹里建库（§3 已把 dk_init 定为「人触发一次」的动作）。所以常驻那层只放「有索引时才成立的规则」，建库的细节留给按需载入的 SKILL —— 那时用户已明确要治理。按仓库真分两版要改成 per-agent 注册 + 每请求求值，为一句提示不值得 |
+| 2026-11-23 | **v0.2.7 发布整理（对外仓库第一版）**：README 按「陌生人能照做」重写（`cargo install --path crates/dk` 起步、`dk put` 的 `{entries:[…]}` 结构、`--allow-partial` 拼写、`dk init` 会多出 AGENTS.md 这一张卡）；补 LICENSE / .gitignore / .gitattributes（强制 LF）/ CI（三平台 fmt·clippy·test·build·e2e·`dk check`）；e2e 从 `_tmp/` 移进 `package/test/e2e.mjs`；`dk map` 目录树渲染修掉 `crates//` 与「文件长得像目录」；Cargo.toml 补 `rust-version = "1.88"`；索引刷新 29/29 | 仓库对外之后，第一份被读的是 README 不是 SPEC：README 里一条跑不通的命令等于这个项目装不上。CI 最后一步放 `dk check`，索引漂移直接变红 —— 让「卡要跟代码一起改」从倡议变成门 |

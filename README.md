@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/ADkun/dk/actions/workflows/ci.yml/badge.svg)](https://github.com/ADkun/dk/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](Cargo.toml)
+[![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](Cargo.toml)
 
 一个仓库一份 `.dk/map.txt`，一行一个文件，写清四件事：**职责、关系、契约、约束**。
 模型改代码前先查它，改完把动过的文件写回去。没有阶段、没有批次、没有审批流。
@@ -22,14 +22,18 @@ dk 的取舍只有一条：**一次改动的边际成本必须低于它省下的
 ## 30 秒上手
 
 ```bash
-cargo build --release                      # 产出 target/release/dk（Windows 为 dk.exe）
+cargo install --path crates/dk --locked    # 装出 dk（~/.cargo/bin）；不想装就用 ./target/release/dk
 dk init                                    # 建 .dk/ 与 .dkignore，并往 AGENTS.md 追加受管块
 dk sweep                                   # 看还差哪些文件没建卡（只列路径与机器特征，不读源码）
-dk put cards.json                          # 写卡：[{"path":"src/a.rs","F":"…","R":"…"}]；省略文件则读 stdin
-dk map "改会话恢复时的锁竞争"               # 按任务取相关卡片；无参给目录树（--level l0/l1/l2，--allow_partial）
+dk put cards.json                          # 写卡：{"entries":[{"path":"src/a.rs","F":"…","R":"…"}]}；省略文件读 stdin
+dk map "改会话恢复时的锁竞争"               # 按任务取相关卡片；无参给目录树（--level l0/l1/l2，--allow-partial）
 dk get src/a.rs                            # 取全卡 + 同目录兄弟 + 新鲜度
 dk check                                   # 全量体检；不干净时 exit 1（--json 给机器读）
 ```
+
+`dk init` 会写 `AGENTS.md`，而它同样是受管文件——所以新仓库第一次 `dk check` 通常报
+「受管 2 文件 / 1 张卡 / 50%」。给 `AGENTS.md` 写一张卡（或 `dk_put` 传 `skip:true`）即可。
+这不是坑，是硬边界 1 要的：没有文件能悄悄绕过索引。
 
 模型侧就不用敲命令了：六个 MCP 工具（见下），一张卡一次调用。
 
@@ -64,6 +68,16 @@ dk check                                   # 全量体检；不干净时 exit 1�
 | `dk_put` | 写卡：`{entries:[{path,F,R,A,S}]}`，哈希由工具现算 | 改完立刻写回 |
 | `dk_check` | 全量体检：覆盖率、过期、失联、坏行、坏 R | 收工前 / CI 里 |
 
+一次真实调用（本仓库 29 个文件，这里节选两条，卡片正文已截断）：
+
+```text
+$ dk map "插件壳怎么装到 profile"
+Cargo.toml@6fe36697: F:工作区：两个 crate 与统一 release 档 | R:crates/dk/Cargo.toml, crates/dk-core/Cargo.toml | A:…
+package/test/e2e.mjs@1b178b05: F:插件壳的 fake-ctx 端到端：注册 / 注入 / 转发 / 换 root / 错误路径共 27 条断言 | …
+```
+
+两条卡约 200 token，替掉的是「把 29 个文件挨个打开，判断哪个与这次改动相关」。
+
 ## CLI
 
 ```
@@ -73,6 +87,7 @@ init    sweep   check   get   put   map   tokens   serve   mcp
 - `serve`：NDJSON，一行一帧 `{id,tool,args}` → `{id,ok,result|error}`（DSH 插件与自建 harness 走这个）
 - `mcp`：MCP stdio 服务器（JSON-RPC 2.0），给支持 MCP 的 agent 直接注册
 - `tokens`：统计卡片体量与 token 估算（判断索引是否已经贵到该拆）
+- `-C <dir>`：指定仓库根，默认当前目录。`dk` 自己不上溯——上溯是壳的职责（见 [package/README.md](package/README.md)）
 
 ## 装到 DSH
 
@@ -95,8 +110,9 @@ cargo build --release
 
 ## 三条硬边界
 
-1. **覆盖要么 100%，要么明说没建完**。`dk_map` 在还差 N 个文件时拒绝返回检索结果
-   （`allow_partial:true` 才给）。部分索引比没有索引更危险：它让人以为查过了。
+1. **覆盖要么 100%，要么明说没建完**。`dk_map` 的**任务检索**在还差 N 个文件时拒绝返回结果
+   （`allow_partial:true` 才给，且结果头部永久标出缺哪些）。目录树 / 按路径 / 按目录这三种形状
+   查询只回答「索引里有什么」，不拦也不排序。部分索引比没有索引更危险：它让人以为查过了。
 2. **不做流程强制**。AGENTS.md 一块、系统提示词一句、`/dk` 技能一个——就这三层软提醒。
    dk 不看你的工具调用、不监听文件系统、不挂压缩钩子。钩子要穷举 OS × harness × 文件语义 ×
    读次数 × 压缩五个维度，不可穷举即不可信，而不可信的治理工具比没有更糟。
@@ -121,8 +137,9 @@ dk 不证明「治理发生过」，只让改错的机会变少。
 `.dkignore`（`.gitignore` 语法）是唯一的排除声明，人写在上面；
 工具判定「不值得建卡」的精确路径追加到文件末尾的 `# dk:proposed` 分节，人可整段删除。
 
-内置排除只有七个目录（`.git` `.dk` `node_modules` `target` `.venv` `__pycache__` `.idea`）
-与二进制扩展名。`dist` / `build` / `vendor` 不内置——不同生态含义不同，请自己写进 `.dkignore`。
+内置排除四类：七个目录（`.git` `.dk` `node_modules` `target` `.venv` `__pycache__` `.idea`）、
+二进制扩展名、**单个大于 1 MiB 的文件**（大文件不该用摘要代替阅读）、以及 `.dkignore` 自身。
+`dist` / `build` / `vendor` 不内置——不同生态含义不同，请自己写进 `.dkignore`。
 
 ## 项目结构
 
@@ -145,8 +162,9 @@ DSH 插件都只是它的壳，任何壳里都不许出现业务判断。
 cargo test                          # 单元测试
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
-node --test package/test            # DSH 插件壳（需先 cargo build）
-dk check                            # 本仓库索引是否一致
+node --test package/test            # 插件壳单元测试（需先 cargo build）
+node package/test/e2e.mjs           # 插件壳端到端：fake ctx 跑真链路，27 条断言
+dk check                            # 本仓库索引是否一致（CI 最后一步就是它）
 ```
 
 ## 状态

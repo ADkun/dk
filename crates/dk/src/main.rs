@@ -200,7 +200,14 @@ fn run() -> Result<()> {
 
 fn print_map(v: &Value) {
     if let Some(arr) = v.get("dirs").and_then(|x| x.as_array()) {
-        println!("（L0：只给方向，要内容去掉 --level）");
+        // tree 模式的 dir 已经按「目录带尾斜杠、顶层文件不带」给定，再补一个就成了
+        // crates// 与 AGENTS.md/；L0 检索给的是不带尾斜杠的父目录，补一个才清楚。
+        let tree = v.get("mode").and_then(|x| x.as_str()) == Some("tree");
+        if tree {
+            println!("（只给目录形状：给任务描述，或加 --level l1 / l2）");
+        } else {
+            println!("（L0：只给方向，要内容去掉 --level）");
+        }
         for d in arr {
             let dir = d.get("dir").and_then(|x| x.as_str()).unwrap_or("");
             let n = d
@@ -208,7 +215,12 @@ fn print_map(v: &Value) {
                 .or_else(|| d.get("cards"))
                 .and_then(|x| x.as_u64())
                 .unwrap_or(0);
-            println!("  {dir}/  {n}");
+            let shown = if tree {
+                dir.to_string()
+            } else {
+                format!("{}/", dir.trim_end_matches('/'))
+            };
+            println!("  {shown}  {n}");
         }
         return;
     }
