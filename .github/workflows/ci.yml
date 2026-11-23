@@ -29,8 +29,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # Node 22 的 `node --test <目录>` 不展开目录（会报 MODULE_NOT_FOUND），必须点名文件。
+      # 新增 *.test.mjs 时同步改这里与 package/package.json 的 test 脚本。
       - name: 插件壳（单元）
-        run: node --test package/test
+        run: node --test package/test/prompt.test.mjs
       - name: 插件壳（fake-ctx 端到端）
         run: node package/test/e2e.mjs
       - name: 本仓库索引自检

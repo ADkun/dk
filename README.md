@@ -162,7 +162,7 @@ DSH 插件都只是它的壳，任何壳里都不许出现业务判断。
 cargo test                          # 单元测试
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
-node --test package/test            # 插件壳单元测试（需先 cargo build）
+node --test package/test/prompt.test.mjs   # 插件壳单元测试（需先 cargo build）
 node package/test/e2e.mjs           # 插件壳端到端：fake ctx 跑真链路，27 条断言
 dk check                            # 本仓库索引是否一致（CI 最后一步就是它）
 ```

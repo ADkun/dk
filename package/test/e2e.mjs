@@ -4,7 +4,7 @@
  * ④系统提示词只加一段、order/文案符合 SPEC §6 ⑤换 root 会重启子进程。
  *
  * 前置：cargo build（debug 即可）。二进制可用环境变量 DK_BIN 指定。
- * 运行：node --test package/test   或   node package/test/e2e.mjs
+ * 运行：node package/test/e2e.mjs（它是端到端脚本，不是 *.test.mjs，node --test 不会自动收它）
  */
 import { mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
