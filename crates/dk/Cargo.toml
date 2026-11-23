@@ -1,0 +1,15 @@
+[package]
+name = "dk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "dk"
+path = "src/main.rs"
+
+[dependencies]
+dk-core.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true

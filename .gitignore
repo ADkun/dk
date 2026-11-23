@@ -1,0 +1,10 @@
+# 构建产物
+/target
+**/node_modules
+
+# 过程目录（临时脚本、基准、安装报告）
+_tmp/
+
+# 编辑器与系统噪声
+.DS_Store
+*.swp

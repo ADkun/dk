@@ -1,0 +1,12 @@
+# Inserted by the dsh-dk bundle: 内置拉起 dk serve，注册六个原生工具，追加一句系统提示词。
+# binary 留空 = 自动：先找本仓库的 target/{release,debug}/dk，再走 PATH 上的 dk。
+# 要指定其它二进制就填绝对路径（写死一台机器的路径换机器必 ENOENT）。
+# root 留空 = 跟随会话目录并向上找 .dk/（其次 .git/）；填死则固定只索引那一个仓库。
+- insert:
+    - id: dsh-dk
+      name: dsh-dk
+      config:
+        binary: ''
+        root: ''
+        prompt: true
+        callTimeoutMs: 120000

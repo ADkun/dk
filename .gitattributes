@@ -1,0 +1,8 @@
+# 行尾归一：仓库里一律 LF，Windows 工作区也不要在提交时混进 CRLF。
+* text=auto eol=lf
+
+# 二进制：不要嗅探、不要转换（release 附件与图片）
+*.exe binary
+*.zip binary
+*.png binary
+*.jpg binary

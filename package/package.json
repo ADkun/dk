@@ -1,0 +1,29 @@
+{
+  "name": "dsh-dk",
+  "version": "0.2.7",
+  "private": true,
+  "description": "把 dk 代码索引接进 DSH：内置拉起 dk serve、注册六个原生工具、追加一句系统提示词。",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test && node test/e2e.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "meta": {
+    "title": "dk 代码索引",
+    "description": "让 dk 的六个索引工具（dk_map / dk_get / dk_put / dk_sweep / dk_init / dk_check）以原生工具名出现，并自动拉起 dk serve 子进程。不注册任何钩子。"
+  }
+}
