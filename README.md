@@ -22,17 +22,20 @@ dk 的取舍只有一条：**一次改动的边际成本必须低于它省下的
 ## 30 秒上手
 
 ```bash
-cargo install --path crates/dk --locked    # 装出 dk（~/.cargo/bin）；不想装就用 ./target/release/dk
+cargo install --path crates/dk --locked    # 装出 dk 到 ~/.cargo/bin；不想装就把下面的 dk 换成 ./target/release/dk
 dk init                                    # 建 .dk/ 与 .dkignore，并往 AGENTS.md 追加受管块
 dk sweep                                   # 看还差哪些文件没建卡（只列路径与机器特征，不读源码）
-dk put cards.json                          # 写卡：{"entries":[{"path":"src/a.rs","F":"…","R":"…"}]}；省略文件读 stdin
-dk map "改会话恢复时的锁竞争"               # 按任务取相关卡片；无参给目录树（--level l0/l1/l2，--allow-partial）
-dk get src/a.rs                            # 取全卡 + 同目录兄弟 + 新鲜度
-dk check                                   # 全量体检；不干净时 exit 1（--json 给机器读）
+echo '{"entries":[{"path":"AGENTS.md","F":"项目约定与 dk 受管块"}]}' | dk put   # 写卡；省略文件读 stdin
+dk map "改会话恢复时的锁竞争"               # 按任务检索卡片，无参给目录树
+dk get AGENTS.md                           # 取全卡 + 同目录兄弟 + 新鲜度
+dk check                                   # 全量体检；不干净时 exit 1（--json 给机器读，只此一条命令有）
 ```
 
-`dk init` 会写 `AGENTS.md`，而它同样是受管文件——所以新仓库第一次 `dk check` 通常报
-「受管 2 文件 / 1 张卡 / 50%」。给 `AGENTS.md` 写一张卡（或 `dk_put` 传 `skip:true`）即可。
+写入的 `path` 必须是**已存在且受管**的文件，所以上面拿 `AGENTS.md` 演示（它一定在）；
+随手编一个 `src/a.rs` 而仓库里没有这个文件，会被拒。
+
+`dk init` 会写 `AGENTS.md`，而它同样是受管文件——所以在最小的仓库里（`AGENTS.md` + 一个源文件）
+第一次 `dk check` 报「受管 2 文件 / 1 张卡 / 50.0%」。给剩下那个文件写卡（或 `dk_put` 传 `skip:true`）就回到 100%。
 这不是坑，是硬边界 1 要的：没有文件能悄悄绕过索引。
 
 模型侧就不用敲命令了：六个 MCP 工具（见下），一张卡一次调用。
@@ -68,15 +71,17 @@ dk check                                   # 全量体检；不干净时 exit 1�
 | `dk_put` | 写卡：`{entries:[{path,F,R,A,S}]}`，哈希由工具现算 | 改完立刻写回 |
 | `dk_check` | 全量体检：覆盖率、过期、失联、坏行、坏 R | 收工前 / CI 里 |
 
-一次真实调用（本仓库 29 个文件，这里节选两条，卡片正文已截断）：
+一次真实调用（本仓库 29 个文件，这里节选两条，卡片正文为显示截断）：
 
 ```text
 $ dk map "插件壳怎么装到 profile"
-Cargo.toml@6fe36697: F:工作区：两个 crate 与统一 release 档 | R:crates/dk/Cargo.toml, crates/dk-core/Cargo.toml | A:…
-package/test/e2e.mjs@1b178b05: F:插件壳的 fake-ctx 端到端：注册 / 注入 / 转发 / 换 root / 错误路径共 27 条断言 | …
+Cargo.toml@8483e48c: F:工作区：两个 crate 与统一 release 档 | R:crates/dk/Cargo.toml, crates/dk-core/Cargo.toml | A:…
+package/test/e2e.mjs@56347f51: F:插件壳的 fake-ctx 端到端：注册 / 注入 / 转发 / 换 root / 错误路径共 27 条断言 | …
 ```
 
-两条卡约 200 token，替掉的是「把 29 个文件挨个打开，判断哪个与这次改动相关」。
+这两条完整卡合计 1019 B ≈ 340 token（3.0 B/token 的估法），替掉的是「把 29 个文件挨个打开，
+判断哪个与这次改动相关」。`@` 后是源码指纹，每次 `dk_put` 都会变——分不清真假时用 `dk check` 现算。
+
 
 ## CLI
 

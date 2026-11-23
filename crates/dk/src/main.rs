@@ -204,7 +204,7 @@ fn print_map(v: &Value) {
         // crates// 与 AGENTS.md/；L0 检索给的是不带尾斜杠的父目录，补一个才清楚。
         let tree = v.get("mode").and_then(|x| x.as_str()) == Some("tree");
         if tree {
-            println!("（只给目录形状：给任务描述，或加 --level l1 / l2）");
+            println!("（只给目录形状：给任务描述则按任务检索并出卡片；--level 只对检索生效）");
         } else {
             println!("（L0：只给方向，要内容去掉 --level）");
         }

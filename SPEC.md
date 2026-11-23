@@ -322,11 +322,11 @@ AGENTS.md 受管块内容（不得出现 harness 工具名，见 A5）：
 
 | AOCI 的治理能力 | dk 对策 | 状态 |
 |---|---|---|
-| 索引覆盖度可见 | `dk_check` 报 有卡 / 未建卡 / 失联 三计数；`dk_map` 每次返回都带 `coverage` | 保住（「已排除」计数未单独给出，需要时看 `.dkignore`） |
+| 索引覆盖度可见 | `dk_check` 报 有卡 / 未建卡 / 失联 三计数；`dk_map` 的**任务检索**返回带 `coverage`（`paths` / `dir` / `tree` 只回答「索引里有什么」，见 §3） | 保住（「已排除」计数未单独给出，需要时看 `.dkignore`） |
 | 卡是否过期 | 卡内 `@指纹` 对源码哈希；get 顺手校验，check 全量比对 | 保住，且更细（到文件） |
 | 孤儿卡 | `dk_check` 报「有卡无文件」 | 保住 |
 | 结构合法性 | 行格式、行尾自校验、路径在库内且受管、R 指向的路径必须存在 | 保住，硬阻断（§8 写入前一次过完） |
-| 无卡文件也能被发现 | `dk_sweep` 永远列得出来；`dk_map` 在未建完时拒绝给残缺结果 | 保住 |
+| 无卡文件也能被发现 | `dk_sweep` 永远列得出来；`dk_map` 的任务检索在未建完时拒绝给残缺结果（其余三种模式照给，并带 `uncarded`） | 保住 |
 | 并发写不撕裂 | O_EXCL 锁 + CAS(新内容, 旧内容) 原子替换，写只锁目标分片 | 保住（约 60 行，删了就会两进程写烂索引） |
 | 强制性 | 三层软提醒（§6） | **与 AOCI 同级** |
 | 拒收无证据的修改 | —— | 删。dk 由模型自己写卡，不需要证明「我读过」 |
@@ -430,8 +430,8 @@ CLI 的 `dk get/map/put/sweep` 保留给人和脚本；模型侧一律走 `serve
 
 **不注册任何钩子。** 它没有业务逻辑，只有转发。
 
-实现是 `package/index.js`，414 行，其中约 190 行是六份工具 schema 的声明（与 `serve::handle`
-逐参数对齐），真正的手写逻辑约 220 行：一个按 root 复用的 `dk serve` 客户端（NDJSON 分行、
+实现是 `package/index.js`，433 行，其中约 190 行是六份工具 schema 的声明（与 `serve::handle`
+逐参数对齐），真正的手写逻辑约 240 行：一个按 root 复用的 `dk serve` 客户端（NDJSON 分行、
 **pending 按子进程归属**、按 id 结单、超时、中止、死亡重起）+ 仓库根上溯 + 二进制探测 +
 注册循环 + 一段提示词。零 `@deepseek-ai/*` 运行时依赖，`Config` 用 `createRequire` 探测
 `@deepseek-ai/schemastery`，探测不到只是没有设置页表单，不影响插件工作。
@@ -493,8 +493,9 @@ CLI 的 `dk get/map/put/sweep` 保留给人和脚本；模型侧一律走 `serve
   `dk_get` 对改动过的 `browser/lib/cdp.mjs` 报 `state: "stale"`，写回后消失。
 - **自举**：dk 仓库自身 18 个受管文件 18 张卡，`dk check` 一致，全量 2083 token、默认披露 810 token。
 - **单测**：当时 23 个，覆盖行格式往返与篡改、锁互斥、CAS 语义、skip→.dkignore、覆盖率与过期判定。
-- **回看（v0.2.7 现状，覆盖上面的快照数字）**：29 个受管文件 29 张卡、单测 52 个、e2e 27 条断言、
-  `dk tokens` ≈ 4854 token、默认披露 ≈ 1116 token。上面 18/18、2083 token、23 个都是当时的读数，不要再当现状引用。
+- **回看（v0.2.7 现状，覆盖上面的快照数字）**：29 个受管文件 29 张卡、单测 52 个、e2e 27 条断言 +
+  插件壳单测 4 条、`dk tokens` ≈ 5.3k token、默认披露 ≈ 1.2k token。上面 18/18、2083 token、23 个都是当时的读数，
+  不要再当现状引用；要精确值就当场跑 `dk tokens`（它会随卡片增删漂）。
 - **性能**（release 构建，单机 Windows）：
 
   | 操作 | 规模 | 耗时 |
@@ -581,7 +582,8 @@ DSH 插件壳用 fake-ctx 跑真链路（`package/test/e2e.mjs`，不启动 DSH�
 | G7 | `stderr` 一律按 UTF-8 解 | 非 UTF-8 程序（`cmd.exe`）出满屏 U+FFFD | 检测到替换字符时退回单字节解码 |
 | G8 | `hints` 用 `anyOf` | `anyOf` 不在 DSH schema 子集里，走 `defineTool` 会 `UNSUPPORTED_SCHEMA` | 三处统一改成 `string[]`，服务端仍宽容收单串 |
 
-新增回归脚本（当时的临时件，未入库；同一批断言后来并入 `package/test/e2e.mjs` 与 `package/test/prompt.test.mjs`），
+新增回归脚本（当时的临时件，未入库；其中壳层可复现的部分后来并入 `package/test/e2e.mjs`，提示词注入那几条在
+`package/test/prompt.test.mjs`），
 **10 条断言全过**（上溯 / 换 root 20 次 / 三处参数严格 / 超时文案 / 目录不存在 / 中止 / 批量帧）。原 26 条 e2e 断言当时仍全过（现 27 条）。
 
 ### 第 2 层：端到端（未做）

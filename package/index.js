@@ -258,7 +258,7 @@ class Server {
 
 // 参数名与 crates/dk-core/src/serve.rs 的 handle 逐一对齐；对外的 MCP 版在
 // crates/dk-core/src/mcp.rs。改一处就要改另两处；六工具名的比对在
-// _tmp/dk-bench/plugin-e2e.mjs（仓库外的临时脚本，不是 cargo test 覆盖的部分）。
+// package/test/e2e.mjs（脚本，不是 cargo test 覆盖的部分）与 package/test/prompt.test.mjs。
 const SPECS = [
   {
     name: 'dk_init',
