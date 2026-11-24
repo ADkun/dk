@@ -277,7 +277,11 @@ const SPECS = [
     name: 'dk_map',
     concurrency: true,
     description: '查代码索引：给 task 拿最相关的几张卡片（每张含 职责/关系/契约/约束），也可给 paths 或 dir 直接取；'
-      + '不给参数时给目录树。索引没建完时默认拒绝给残缺结果。',
+      + '不给参数时给目录树。索引没建完时默认拒绝给残缺结果。'
+      + 'confidence 只说词面是怎么对上的（surface/fallback/none），不是「答案在里面」；'
+      + 'matched 里 hit 是首张卡踩中的查询词、of 是分母（只数本仓出现过、且不是过半卡片都有的词），absent 是本仓一张卡都没有的词——'
+      + 'hit 少而 absent 多说明该换词或给 paths，不是问法不好。of=0 时 hit 必为空（分母里没有有判别力的词），看 weak_n/absent_n 才知道是哪一类。'
+      + '命中不等于答案。task 传空字符串、paths 传空数组都报错——成功但空的结果等于没问。',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -294,7 +298,7 @@ const SPECS = [
           description: '披露等级：l0 只给目录、l1 给路径加一句话、l2 给整卡（默认）',
         },
         allow_partial: { type: 'boolean', description: '索引未建完仍给结果，结果会标注不含哪些文件' },
-        k: { type: 'integer', description: '返回张数，默认 6' },
+        k: { type: 'integer', description: '卡片张数（不含 R 扩散邻居），默认 6' },
       },
     },
   },

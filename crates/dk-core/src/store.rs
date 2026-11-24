@@ -31,7 +31,10 @@ pub const DEFAULT_IGNORE: &str = "\
 pub type ParseFailure = (usize, ParseError);
 
 /// 一次写入请求中的一条。
+/// 拒未知字段：schema 里写了 additionalProperties:false，实现不真拒就只是句场面话——
+/// 拼错 Fn/F 会被 serde 静默吞掉，模型以为写进去了（审查 F6）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PutEntry {
     pub path: String,
     // 卡片字段是大写的（F/R/A/S）。参数名必须与卡片长得一样，

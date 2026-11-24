@@ -104,6 +104,38 @@ const get = await tools.get('dk_get').execute({ paths: ['crates/dk-core/src/sear
 const state = Array.isArray(get.cards) ? get.cards[0]?.state : get.state
 ok('dk_get 给出新鲜度', state === 'fresh' || state === 'stale', String(state))
 
+console.log('== 参数互斥：不替调用方猜，也不静默丢弃（§3）==')
+// 审查实测过的三种「问了等于没问」：task+paths 时 task 被吞、只给 hints 退成目录树、
+// dir+level:"l0" 照样给全卡；再加 k:0 让 confidence/matched 说假话。全部必须报错。
+const errOf = async (args) => {
+  try { await tools.get('dk_map').execute(args, exec); return '' } catch (e) { return String(e?.message || e) }
+}
+ok('task 与 paths 同给 → 报错', /只能给一个/.test(await errOf({ task: '检索', paths: ['crates/dk-core/src/serve.rs'] })))
+ok('paths 与 dir 同给 → 报错', /只能给一个/.test(await errOf({ paths: ['README.md'], dir: 'crates' })))
+ok('只给 hints 不给 task → 报错', /只属于任务检索/.test(await errOf({ hints: ['bm25'] })))
+ok('dir 带 level → 报错', /只属于任务检索/.test(await errOf({ dir: 'crates/dk-core/src', level: 'l0' })))
+ok('k:0 → 报错（否则命中被裁空，confidence 说假话）', /至少 1/.test(await errOf({ task: 'bm25', k: 0 })))
+// schema 写了 additionalProperties:false，实现就得真拒：拼错的 hint 被静默忽略，比报错难查得多。
+ok('拼错的参数 → 报错而不是静默忽略', /未知参数 hint/.test(await errOf({ task: 'bm25', hint: ['检索'] })))
+
+console.log('== 壳与核心的约定：CLI 也要能用（v0.3.2 的 F1）==')
+// e2e 原先只走 serve 路径，于是互斥守卫把 CLI 唯一的入口用法（无参给目录树）打死时，
+// 33 条断言一条都没发现。壳与核心的约定必须两端各测一次。
+const { execFileSync } = await import('node:child_process')
+const cli = (args) => {
+  try {
+    return { out: execFileSync(BIN, args, { encoding: 'utf8' }), err: '' }
+  } catch (e) {
+    return { out: String(e.stdout || ''), err: String(e.stderr || e.message) }
+  }
+}
+const tree = cli(['map', '-C', SELF])
+ok('裸 dk map 出目录树（clap 默认值不许转发成"给了 level"）',
+  /只给目录形状/.test(tree.out) && tree.out.includes('crates/'), (tree.out.split(String.fromCharCode(10))[1] || tree.err).trim())
+const noTaskLevel = cli(['map', '-C', SELF, '--level', 'l0'])
+ok('没有 task 却给 --level l0 → 报错，不静默忽略', /只属于任务检索/.test(noTaskLevel.err), noTaskLevel.err.trim().slice(0, 80))
+ok('空 paths → 报错（成功但空等于没问）', /paths 不能为空/.test(await errOf({ paths: [] })))
+
 console.log('== 第二个 root：写链路（临时目录）==')
 rmSync(TEMP, { recursive: true, force: true })
 mkdirSync(join(TEMP, 'src'), { recursive: true })

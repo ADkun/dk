@@ -75,12 +75,23 @@ dk check                                   # 全量体检；不干净时 exit 1�
 
 ```text
 $ dk map "插件壳怎么装到 profile"
-Cargo.toml@8483e48c: F:工作区：两个 crate 与统一 release 档 | R:crates/dk/Cargo.toml, crates/dk-core/Cargo.toml | A:…
-package/test/e2e.mjs@56347f51: F:插件壳的 fake-ctx 端到端：注册 / 注入 / 转发 / 换 root / 错误路径共 27 条断言 | …
+Cargo.toml@dfde79f8: F:工作区：两个 crate 与统一 release 档 | R:crates/dk/Cargo.toml, crates/dk-core/Cargo.toml | A:…
+.github/workflows/ci.yml@8867ba1d: F:CI：三平台 fmt / clippy / test / build + 插件壳端到端 + 本仓库索引自检 | …
+（首张卡命中 1/3 个有判别力的查询词：profile）
 ```
 
-这两条完整卡合计 1019 B ≈ 340 token（3.0 B/token 的估法），替掉的是「把 29 个文件挨个打开，
+这两条完整卡合计约 1 k token（3.0 B/token 的估法），替掉的是「把 29 个文件挨个打开，
 判断哪个与这次改动相关」。`@` 后是源码指纹，每次 `dk_put` 都会变——分不清真假时用 `dk check` 现算。
+
+最后那行是**这次问法有多虚**的凭据：七个词里只有三个有判别力（本仓到处都有的词不进分母），
+而这三个里只踩中 `profile` 一个——说明卡片里不这么说话。
+
+换成英文问 `how do I install the plugin into a profile`，同一行会变成
+`（首张卡命中 1/2 个有判别力的查询词：profile；另有 5 个词本仓没有：how、do、the、plugin、into）`
+——**不是工具不认英文，是英文单词与中文卡片本来就没有重叠**，`absent` 把这一点直接说出来，
+而不是让你以为自己问法不好。这时候补 `hints`（放源码/报错里的标识符，比如
+`cordis.patch.yml`、`ctx.inject`），或已知要动哪个文件就直接 `paths`，比挨个看候选猜哪个对快得多。
+`confidence` 同理：`surface` 只说「词面是对上的」，从不说「答案在里面」。
 
 ## CLI
 

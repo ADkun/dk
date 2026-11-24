@@ -87,14 +87,17 @@ fn negotiate(req: &Value) -> String {
 /// 工具错误按 MCP 惯例走 isError，而不是 JSON-RPC error——模型能看见并自己改参数。
 fn call(store: &Store, params: Value) -> Value {
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-    if !serve::TOOLS.contains(&name) {
+    // 与 serve::handle 用同一套改名规则：这条壳里多一条「带不带 dk_ 前缀」的差异，
+    // 同一个工具在两处就会一边能用一边报未知（AGENTS.md：行为只有一处定义）。
+    let bare = name.strip_prefix("dk_").unwrap_or(name);
+    if !serve::TOOLS.iter().any(|t| t.strip_prefix("dk_").unwrap_or(t) == bare) {
         return json!({
             "content": [{"type": "text", "text": format!("未知工具 {name}；可用：{}", serve::TOOLS.join(" / "))}],
             "isError": true,
         });
     }
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
-    match serve::handle(store, name, &args) {
+    match serve::handle(store, bare, &args) {
         Ok(v) => json!({
             "content": [{"type": "text", "text": serde_json::to_string_pretty(&v).unwrap_or_default()}],
         }),
@@ -123,7 +126,7 @@ fn tool_specs() -> Value {
         },
         {
             "name": "dk_map",
-            "description": "查代码索引：给 task 拿最相关的几张卡片（每张含 职责/关系/契约/约束），也可给 paths 或 dir 直接取；不给参数时给目录树。索引没建完时默认拒绝给残缺结果。",
+            "description": "查代码索引：给 task 拿最相关的几张卡片（每张含 职责/关系/契约/约束），也可给 paths 或 dir 直接取；不给参数时给目录树。索引没建完时默认拒绝给残缺结果。confidence 只说词面是怎么对上的（surface/fallback/none），不是「答案在里面」；matched 里 hit 是首张卡踩中的查询词、of 是分母（只数本仓出现过、且不是过半卡片都有的词）、absent 是本仓一张卡都没有的词——hit 少而 absent 多说明该换词或给 paths，不是问法不好。of=0 时 hit 必为空（分母里没有有判别力的词），看 weak_n/absent_n 才知道是哪一类。命中不等于答案。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -137,7 +140,7 @@ fn tool_specs() -> Value {
                         "description": "披露等级：l0 只给目录、l1 给路径加一句话、l2 给整卡（默认）"
                     },
                     "allow_partial": {"type": "boolean", "description": "索引未建完仍给结果，结果会标注不含哪些文件"},
-                    "k": {"type": "integer", "description": "返回张数，默认 6"}
+                    "k": {"type": "integer", "description": "卡片张数（不含 R 扩散邻居），默认 6"}
                 },
                 "additionalProperties": false
             }

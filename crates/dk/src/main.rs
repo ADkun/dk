@@ -58,9 +58,9 @@ enum Cmd {
         /// 索引不全时仍然给结果（默认拒绝）
         #[arg(long)]
         allow_partial: bool,
-        /// 披露级别：l0 目录 / l1 清单 / l2 全卡
-        #[arg(long, default_value = "l2")]
-        level: String,
+        /// 披露级别：l0 目录 / l1 清单 / l2 全卡（默认 l2）
+        #[arg(long)]
+        level: Option<String>,
     },
     /// NDJSON 服务：每行 {id,tool,args} -> {id,ok,result|error}
     Serve,
@@ -187,7 +187,18 @@ fn run() -> Result<()> {
             level,
         } => {
             let text = task.join(" ");
-            let args = json!({ "task": text, "allow_partial": allow_partial, "level": level });
+            // 只转发人真给过的参数：clap 的默认值一旦无条件塞进 args，「无参给目录树」
+            // 就会被 serve 的互斥守卫当成「没有 task 却给了 level」当场打死（审查 F1）。
+            let mut args = json!({});
+            if !text.trim().is_empty() {
+                args["task"] = json!(text);
+            }
+            if let Some(l) = level {
+                args["level"] = json!(l);
+            }
+            if allow_partial {
+                args["allow_partial"] = json!(true);
+            }
             let v = serve::handle(&store, "dk_map", &args)?;
             print_map(&v);
             Ok(())
@@ -222,6 +233,14 @@ fn print_map(v: &Value) {
             };
             println!("  {shown}  {n}");
         }
+        if !tree {
+            print_matched(v, Shape::Dirs);
+            // L0 也要给 hint：服务端对 l0 是带 hint 的，CLI 不印就等于把「为什么这几个
+            // 目录」的理由吞了，只剩一张无从核对的清单（审查 M5）。
+            if let Some(h) = v.get("hint").and_then(|x| x.as_str()) {
+                eprintln!("\n{h}");
+            }
+        }
         return;
     }
     if let Some(arr) = v.get("cards").and_then(|x| x.as_array()) {
@@ -235,7 +254,8 @@ fn print_map(v: &Value) {
                 None => println!("{c}"),
             }
         }
-        if arr.is_empty() {
+        // 命中行优先：没有卡片时 matched 里那行往往就是唯一有用的提示。
+        if !print_matched(v, Shape::Cards) && arr.is_empty() {
             println!("（无匹配。改用目录或路径指定范围，或先自己搜一轮再带路径来问）");
         }
         if let Some(h) = v.get("hint").and_then(|x| x.as_str()) {
@@ -246,13 +266,106 @@ fn print_map(v: &Value) {
     println!("{}", serde_json::to_string_pretty(v).unwrap_or_default());
 }
 
+/// 只报「首张卡命中了哪些有判别力的词」，不报分数：分数不可比，词才是人能核对的证据。
+/// 三种任务档（卡片 / L0 目录）都要印——不印出来，hint 里那句「命中的少就换词」就没依据。
+/// 本仓一个词都没有时也要印：那正是「你该换一套词」的唯一提示。
+/// 返回是否印了东西：没有卡片时这行往往就是唯一的提示，不能和「无匹配」那句二选一。
+/// 输出形态：同样的 matched，在卡片清单下说「几张」，在目录清单下必须说「几个目录」，
+/// 否则会指着目录讲卡片（审查 F3）。
+#[derive(Clone, Copy)]
+enum Shape {
+    Cards,
+    Dirs,
+}
+
+fn print_matched(v: &Value, shape: Shape) -> bool {
+    let Some(m) = v.get("matched") else { return false };
+    let of = m.get("of").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+    let absent_n = m.get("absent_n").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+    let weak_n = m.get("weak_n").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+    let total = m.get("total").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+    let list = |k: &str| -> Vec<&str> {
+        m.get(k)
+            .and_then(|x| x.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+            .unwrap_or_default()
+    };
+    if of == 0 {
+        // 没有有判别力的词时，三种原因要分开说：太常见 / 本仓没有 / 压根没分出词
+        // （emoji、纯标点，以及被当成跨词二元组丢弃的无空格文字）。
+        let mut parts: Vec<String> = Vec::new();
+        if weak_n > 0 {
+            parts.push(format!("{weak_n} 个词本仓都有但过半卡片都有、没有判别力"));
+        }
+        if absent_n > 0 {
+            parts.push(format!(
+                "{absent_n} 个词本仓一张卡都没有：{}",
+                list("absent").join("、")
+            ));
+        }
+        if parts.is_empty() {
+            if total == 0 {
+                return false;
+            }
+            // 词都在本仓：要么是被当成跨词边界丢掉的无空格二元组，要么压根不是索引里的
+            // 词元（单字最典型——卡片正文有它，索引里没有这一个词）。这两种若说成
+            // 「本仓一张卡都没有」，就是当着卡片的面说没有卡片（审查 S1）。
+            let fb = v.get("confidence").and_then(|x| x.as_str()) == Some("fallback");
+            let shown = match shape {
+                Shape::Cards => "下面几张",
+                Shape::Dirs => "这几个目录",
+            };
+            parts.push(if fb {
+                format!("{total} 个词不是索引里的词元（单字、极短串都这样），{shown}是按字面字符兜底对上的")
+            } else if total == 1 {
+                // 「无空格文字按相邻二元组切」对一个字说不通：没有相邻可言（审查 F4）。
+                "这 1 个词不是索引里的词元（单个字或极短串）：换成源码/卡片里出现过的词".to_string()
+            } else {
+                format!("{total} 个词在本仓卡片里都没有（无空格文字按相邻二元组切）")
+            });
+        }
+        println!("（{}）", parts.join("；"));
+        return true;
+    }
+    let hit = list("hit");
+    let mut parts: Vec<String> = Vec::new();
+    if hit.is_empty() {
+        parts.push(format!("{of} 个有判别力的查询词一个也没命中"));
+    } else {
+        parts.push(format!(
+            "首张卡命中 {}/{} 个有判别力的查询词：{}",
+            hit.len(),
+            of,
+            hit.join("、")
+        ));
+    }
+    if absent_n > 0 {
+        parts.push(format!(
+            "另有 {absent_n} 个词本仓没有：{}",
+            list("absent").join("、")
+        ));
+    }
+    println!("（{}）", parts.join("；"));
+    true
+}
+
 fn serve_loop(store: &Store) -> Result<()> {
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
     for line in stdin.lock().lines() {
+        // 非 UTF-8 字节不能让整个会话死掉：一轮乱码就断掉 MCP 通道，
+        // 调用方只看到「工具没有返回」，比报错难查一百倍。回一帧、接着读下一行。
         let line = match line {
             Ok(l) => l,
-            Err(_) => break,
+            Err(e) => {
+                writeln!(
+                    out,
+                    "{}",
+                    json!({"id": null, "ok": false, "error": format!("坏请求：这一行不是合法 UTF-8（{e}）")})
+                )?;
+                out.flush()?;
+                continue;
+            }
         };
         if line.trim().is_empty() {
             continue;

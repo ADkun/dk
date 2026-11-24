@@ -17,6 +17,8 @@ use std::collections::BTreeMap;
 const TOP_K: usize = 6;
 /// 扩散张数上限（R 邻居只给一行摘要，不占卡片预算）。
 const SPREAD: usize = 5;
+/// `matched.absent` 最多列几个词：够换词就够，长查询不该刷屏；总数另给 `absent_n`。
+const ABSENT_LIST_MAX: usize = 8;
 
 pub const TOOLS: [&str; 6] = [
     "dk_init", "dk_map", "dk_get", "dk_put", "dk_sweep", "dk_check",
@@ -31,6 +33,13 @@ pub fn handle(store: &Store, tool: &str, args: &Value) -> Result<Value> {
         );
     }
     let name = tool.strip_prefix("dk_").unwrap_or(tool);
+    let known = TOOLS
+        .iter()
+        .any(|t| t.strip_prefix("dk_").unwrap_or(t) == name);
+    if !known {
+        bail!("未知工具 {name}；可用：{}", TOOLS.join(" / "));
+    }
+    reject_unknown_args(name, args)?;
     match name {
         "init" => init(store, args),
         "map" => map(store, args),
@@ -38,15 +47,58 @@ pub fn handle(store: &Store, tool: &str, args: &Value) -> Result<Value> {
         "put" => put(store, args),
         "sweep" => sweep_tool(store, args),
         "check" => check_tool(store),
-        other => bail!("未知工具 {other}；可用：{}", TOOLS.join(" / ")),
+        _ => unreachable!("TOOLS 与上面的分支必须一一对应"),
     }
 }
 
-fn arg_str(args: &Value, key: &str) -> Option<String> {
-    args.get(key)
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+/// 每个工具收哪些参数（与 mcp.rs 的 tool_specs、package/index.js 的 SPECS 同源）。
+fn arg_keys(name: &str) -> &'static [&'static str] {
+    match name {
+        "init" => &["agents"],
+        "map" => &[
+            "task",
+            "hints",
+            "paths",
+            "dir",
+            "level",
+            "k",
+            "allow_partial",
+        ],
+        "get" => &["paths"],
+        "put" => &["entries", "drop_bad"],
+        "sweep" => &["limit"],
+        _ => &[],
+    }
+}
+
+/// 三处声明都写了 additionalProperties: false，实现不真拒就只是句场面话：
+/// 拼错一个 hint（少个 s）会被静默丢掉，模型以为给了提示，检索里根本没有。
+fn reject_unknown_args(name: &str, args: &Value) -> Result<()> {
+    let Some(obj) = args.as_object() else {
+        return Ok(());
+    };
+    let allowed = arg_keys(name);
+    for key in obj.keys() {
+        if !allowed.contains(&key.as_str()) {
+            let takes = if allowed.is_empty() {
+                format!("dk_{name} 不收参数")
+            } else {
+                format!("dk_{name} 只收 {}", allowed.join(" / "))
+            };
+            bail!("未知参数 {key}：{takes}（拼错的参数会被静默忽略，所以这里直接报错）");
+        }
+    }
+    Ok(())
+}
+
+/// 存在但不是字符串就报错，不当成「没给」：task 被传成数组时静默退成目录树，
+/// 调用方拿回的是一句「要内容就给 task」——问了等于没问（审查 F2）。
+fn opt_str(args: &Value, key: &str) -> Result<Option<String>> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.trim().to_string())),
+        Some(other) => bail!("{key} 必须是字符串（收到 {other}）"),
+    }
 }
 
 /// 一个参数既接受字符串也接受字符串数组——声明的类型与实现不一致时，
@@ -93,8 +145,7 @@ fn arg_usize(args: &Value, key: &str, dflt: usize) -> Result<usize> {
 }
 
 fn init(store: &Store, args: &Value) -> Result<Value> {
-    let existed = store.is_initialized();
-    store.ensure_layout()?;
+    // 先校验参数再动手：类型不对却在仓库里留下一个 .dk/，等于用报错换半个索引。
     // 受管块是索引的常驻入口，默认就写；只有显式传 false 才跳过。
     // 类型不符直接报错、不退回默认值："false" 这类字符串静默当 true 会让人以为关掉了。
     let want_block = match args.get("agents") {
@@ -102,6 +153,8 @@ fn init(store: &Store, args: &Value) -> Result<Value> {
         Some(Value::Bool(b)) => *b,
         Some(other) => bail!("agents 必须是布尔值（收到 {other}）"),
     };
+    let existed = store.is_initialized();
+    store.ensure_layout()?;
     let block = if want_block {
         match agents::upsert(store.root()) {
             Ok(o) => o.as_str(),
@@ -133,11 +186,56 @@ fn map(store: &Store, args: &Value) -> Result<Value> {
     }
     let (cards, _) = store.load()?;
     let idx = Index::build(&cards);
-    let level = arg_str(args, "level")
+    let level = opt_str(args, "level")?
         .unwrap_or_else(|| "l2".to_string())
         .to_lowercase();
     if !matches!(level.as_str(), "l0" | "l1" | "l2") {
         bail!("level 只能是 l0 / l1 / l2（收到 {level}）");
+    }
+    // 类型先严格判定：allow_partial 收到 "true" 会被当成 false，等于悄悄关掉调用方的意图。
+    let allow_partial = match args.get("allow_partial") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(other) => bail!("allow_partial 必须是布尔值（收到 {other}）"),
+    };
+    let task_arg = opt_str(args, "task")?;
+    let dir_arg = opt_str(args, "dir")?;
+    let has_paths = args.get("paths").is_some_and(|v| !v.is_null());
+    let has_dir = dir_arg.as_deref().is_some_and(|d| !d.is_empty());
+    let has_task = task_arg.as_deref().is_some_and(|t| !t.is_empty());
+    if args.get("task").is_some_and(|v| !v.is_null()) && !has_task {
+        bail!("task 是空字符串：想给目录树就别传 task，想检索就给任务描述");
+    }
+    if has_paths && has_dir {
+        bail!("paths 与 dir 只能给一个：paths 按文件取卡，dir 按目录切片");
+    }
+    if has_task && (has_paths || has_dir) {
+        bail!("task 与 paths/dir 只能给一个：路径是直接取卡，不做检索");
+    }
+    // 四种模式互斥，任务检索专属参数也互斥：同时给、或没有 task 就给 hints/k/level/
+    // allow_partial，工具都不能替调用方挑一个然后闭嘴（§3「静默退回默认值会让调用方
+    // 以为自己问过了」）。审查实测：task+paths 同给时 task 被无声丢弃，只给 hints 时
+    // 直接退成目录树，dir+level:"l0" 照样给全卡——三处都是「问了等于没问」。
+    // 但显式传默认值不算「给了」：客户端常把 schema 里所有字段一次发齐，因此只有
+    // level 不是 l2、allow_partial 为 true 才拒（审查 F1 的假阳性）。
+    if !has_task {
+        for key in ["hints", "k"] {
+            let given = match args.get(key) {
+                None | Some(Value::Null) => false,
+                Some(Value::Array(a)) => !a.is_empty(),
+                Some(Value::String(s)) => !s.trim().is_empty(),
+                Some(_) => true,
+            };
+            if given {
+                bail!("{key} 只属于任务检索：没有 task 它无从生效，别给");
+            }
+        }
+        if level != "l2" {
+            bail!("level 只属于任务检索：没有 task 它无从生效，别给");
+        }
+        if allow_partial {
+            bail!("allow_partial 只属于任务检索：没有 task 它无从生效，别给");
+        }
     }
 
     // 显式路径：不做检索，直接按路径取。
@@ -146,6 +244,10 @@ fn map(store: &Store, args: &Value) -> Result<Value> {
             .iter()
             .map(|s| s.replace('\\', "/"))
             .collect();
+        // 空数组 / 空字符串都给不出卡片，却会回一份「成功但空」的结果：说清楚比留白好。
+        if want.is_empty() {
+            bail!("paths 不能为空：给至少一个仓库内路径，或改用 task / dir");
+        }
         let mut lines = Vec::new();
         let mut unknown = Vec::new();
         for w in want {
@@ -158,7 +260,7 @@ fn map(store: &Store, args: &Value) -> Result<Value> {
     }
 
     // 目录切片：把某目录下所有卡原样给出（L1）。
-    if let Some(d) = arg_str(args, "dir") {
+    if let Some(d) = dir_arg.as_deref().filter(|d| !d.is_empty()) {
         let d = d.trim_end_matches('/').replace('\\', "/");
         let mut lines: Vec<String> = cards
             .iter()
@@ -170,7 +272,7 @@ fn map(store: &Store, args: &Value) -> Result<Value> {
     }
 
     // 无参：L0 目录树，只给形状不给内容。
-    let Some(task) = arg_str(args, "task") else {
+    let Some(task) = task_arg.filter(|t| !t.is_empty()) else {
         let mut dirs: BTreeMap<String, usize> = BTreeMap::new();
         for c in &cards {
             let top = c.path.split('/').next().unwrap_or(&c.path).to_string();
@@ -197,12 +299,7 @@ fn map(store: &Store, args: &Value) -> Result<Value> {
     // 但拒绝必须可操作：告诉人差多少个、差的是哪些，而不是一句「不完整」。
     let cov = coverage(store)?;
     let partial = cov.uncarded > 0;
-    if partial
-        && !args
-            .get("allow_partial")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    {
+    if partial && !allow_partial {
         return Ok(json!({
             "status": "incomplete",
             "managed": cov.managed,
@@ -218,7 +315,14 @@ fn map(store: &Store, args: &Value) -> Result<Value> {
         q.push_str(&h);
     }
     let k = arg_usize(args, "k", TOP_K)?;
+    // k=0 时命中被裁空，confidence 与 matched 会跟着说「词面没有匹配」——那是假话。
+    // 与其让判断依据被 k 带走，不如直接拒收这个值。
+    if k == 0 {
+        bail!("k 是返回张数，至少 1（收到 0）：想知道有没有命中看 confidence 与 matched");
+    }
     let hits = idx.retrieve(&q, &task, k, SPREAD);
+    let terms = Index::query_terms(&q);
+    let span = idx.span(&terms);
     // 按披露级别取舍：L0 只给方向，L1 给清单，L2 给全卡（默认）。
     let mut dirs: BTreeMap<String, usize> = BTreeMap::new();
     let mut out = Vec::new();
@@ -247,27 +351,96 @@ fn map(store: &Store, args: &Value) -> Result<Value> {
         }
     }
     let top_score = hits.first().map(|h| h.score).unwrap_or(0.0);
-    // 字面兜底的命中一律按「低置信」上报：它是止损，不是结论。
+    // 字面兜底的命中不是结论，单独一档。
     let degraded = hits.first().map(|h| h.why == "cjk").unwrap_or(false);
+    // 三档只说「词是怎么对上的」，不承诺「答案在里面」：
+    // 实测报 ok 的 142 条里 43 条（30%）正确答案不在前三，且没有任何阈值能把它们分开。
     let confidence = if top_score <= 0.0 {
         "none"
-    } else if degraded || (out.is_empty() && dirs.is_empty()) {
-        "low"
-    } else {
-        "ok"
-    };
-    let hint = if top_score <= 0.0 {
-        "词面没有匹配。改用 paths / dir 指定范围，或先自己 rg 一轮再带路径来问"
     } else if degraded {
-        "只按字面字符兜底对上的，别当成结论：给 paths / dir 缩小范围，或自己 rg 一轮再来"
+        "fallback"
     } else {
-        "卡片是导航，源码仍是事实；要全卡用 dk_get，要源码自己读文件"
+        "surface"
+    };
+    // 只把有判别力的词算进分母：本仓到处都有的词算进去几乎必然命中，会让 of 天然虚高、
+    // 报警饱和（实测报警 precision 只有 37%，一半多是假警报）。没有停用词表：中文虚词靠
+    // 「出现在几乎每张卡里」落进 weak，英文虚词因为本仓根本没有这些词而落进 absent。
+    let matched: Vec<&str> = hits
+        .first()
+        .map(|h| idx.hit_terms(h.idx, &span.strong))
+        .unwrap_or_default();
+    let absent: Vec<&str> = span.absent.iter().take(ABSENT_LIST_MAX).copied().collect();
+    // 三档只说「词是怎么对上的」，并且把「你的词根本不在这个仓库里」单独讲出来——
+    // 只报「词面没有匹配」，跨语言用户会以为是自己问法不好，而不是换一套词。
+    let hint: String = if top_score <= 0.0 {
+        // 三种「为什么没对上」必须分开说：本仓没有这些词 / 词太常见没判别力 /
+        // 有判别力却一个也没命中。混成一句，小仓库里就会说出「你的词本仓一个也没有」这种谎话。
+        let mut h = String::new();
+        if !span.absent.is_empty() {
+            let sample: Vec<&str> = span.absent.iter().take(3).copied().collect();
+            h.push_str(&format!(
+                "查询里 {} 个词在本仓卡片中一个也没出现（{}）",
+                span.absent.len(),
+                sample.join("、")
+            ));
+        }
+        if !span.strong.is_empty() {
+            if !h.is_empty() {
+                h.push_str("；");
+            }
+            h.push_str(&format!("{} 个有判别力的查询词一个也没对上", span.strong.len()));
+        }
+        if h.is_empty() {
+            // 走到这里有三种完全不同的原因，不能混成一句：词都太常见；分词后一个词都没有
+            // （emoji、纯标点、孤字）；或者词全被当成跨词边界的二元组丢掉了（韩文、泰文这类
+            // 无空格文字整句查英文仓库时就是这一种——说「没有能检索的词」等于怪用户乱输）。
+            h.push_str(&if !span.weak.is_empty() {
+                "查询词在本仓都太常见（过半卡片都有），没有判别力：换成更具体的词，或直接给 paths"
+                    .to_string()
+            } else if terms.is_empty() {
+                // 走到这里的是分词后真一个词都没有的输入（emoji、纯标点、单字母）；
+                // 单个汉字会留下一个词元，走下面的 else，别把两件事混成一句。
+                "查询里没有能检索的词（emoji、纯标点、单字母都会这样）：换成文字描述，或直接给 paths"
+                    .to_string()
+            } else {
+                let why = if terms.len() == 1 && terms[0].chars().count() == 1 {
+                    "单个字不是索引里的词元"
+                } else {
+                    "无空格文字按相邻二元组切，没逐条列出"
+                };
+                format!(
+                    "查询里 {} 个词在本仓卡片中一个也没出现（{why}）：换成源码/卡片里出现过的词，或直接给 paths",
+                    terms.len()
+                )
+            });
+        } else {
+            h.push_str("。改用 paths / dir 指定范围，或先自己 rg 一轮再带路径来问");
+        }
+        h
+    } else if degraded {
+        "只按字面字符兜底对上的，别当成结论：给 paths / dir 缩小范围，或自己 rg 一轮再来".to_string()
+    } else if span.strong.is_empty() {
+        // 只剩「本仓到处都有」的词：排序确实动了，但一个判别力都没有，hit 必然为空。
+        // 不说清楚，调用方会以为 matched 坏了，或者以为这几张就是答案。
+        // l0 返回的是目录不是卡，措辞跟着换（审查 F3）。
+        let unit = if level == "l0" { "这几个方向" } else { "这几张" };
+        format!("查询词在本仓都有、但过半卡片都有（没有判别力）：hit 为空是正常的，{unit}只按常见词排了个序——换成更具体的词，或直接给 paths")
+    } else {
+        "matched 只数有判别力的词：of 是分母（本仓出现过、且不是过半卡片都有的词），hit 是首张卡踩中的，absent 是本仓没有的词。absent 多就换词（hints 放源码/报错里的标识符），命中少就给 paths。词面重叠不等于答案在里面：卡片是导航，源码仍是事实".to_string()
     };
     let mut body = json!({
         "mode": "task",
         "level": level,
         "query": q,
         "confidence": confidence,
+        "matched": {
+            "hit": matched,
+            "of": span.strong.len(),
+            "weak_n": span.weak.len(),
+            "absent": absent,
+            "absent_n": span.absent.len(),
+            "total": terms.len(),
+        },
         "coverage": cov.json(),
         "hint": hint,
     });

@@ -4,13 +4,15 @@
 //! 因为实测它在排序期零贡献、在扩散期值 +15.8pp。
 
 use crate::card::Card;
-use crate::tokenize::tokenize;
-use std::collections::HashMap;
+use crate::tokenize::{is_unspaced, tokenize};
+use std::collections::{HashMap, HashSet};
 
 const K1: f64 = 1.2;
 const B: f64 = 0.75;
 /// 字面兜底的最低覆盖率：查询里至少六成汉字出现在同一张卡里才算候选。
 const FALLBACK_COVER: f64 = 0.6;
+/// 判别力上限：出现在过半卡片里的词（`crates`/`src`/`rs` 这类路径词元）命中它几乎必然发生，没有信息量。
+const WEAK_DF_RATIO: f64 = 0.5;
 
 pub struct Index<'a> {
     cards: &'a [Card],
@@ -20,6 +22,18 @@ pub struct Index<'a> {
     avgdl: f64,
     /// R 图入度：被多少条卡引用。免费得来的「重要度」，替代人写 C 值。
     in_degree: Vec<u32>,
+}
+
+/// 查询词按判别力分成三堆。「命中的少」到底是排错了，还是你的词根本不在这个索引里，
+/// 只有分开数才看得出来（SPEC §3 `matched` 口径）。`matched.of` 数的就是 `strong` 这一堆。
+pub struct Span<'s> {
+    /// 在索引里、又不至于到处都是：命中它才算证据。
+    pub strong: Vec<&'s str>,
+    /// df 超过一半卡片：命中它几乎是必然的，说明不了任何事。
+    pub weak: Vec<&'s str>,
+    /// 本仓一张卡都没有、且是带空格的文字（拉丁/西里尔/阿拉伯…）：这才是「你的词不在这个仓库里」。
+    /// 无空格文字（CJK/泰/高棉…）的二元组不在索引里是分词的常态，报出去只会误导，所以不收。
+    pub absent: Vec<&'s str>,
 }
 
 #[derive(Debug, Clone)]
@@ -79,19 +93,50 @@ impl<'a> Index<'a> {
         self.in_degree[i]
     }
 
+    /// 查询词：去重、保持出现顺序。
+    /// BM25 与「命中证据」必须共用这一份口径，否则两边各拆一遍词，迟早对不上。
+    pub fn query_terms(query: &str) -> Vec<String> {
+        let mut seen = HashSet::new();
+        tokenize(query)
+            .into_iter()
+            .filter(|t| seen.insert(t.clone()))
+            .collect()
+    }
+
+    /// 这张卡命中了哪些词——词面重叠的证据，不是「列对了」的判断。
+    pub fn hit_terms<'s>(&self, idx: usize, terms: &[&'s str]) -> Vec<&'s str> {
+        let m = &self.tf[idx];
+        terms.iter().copied().filter(|t| m.contains_key(*t)).collect()
+    }
+
+    /// 把查询词分成「有判别力 / 太常见 / 本仓没有」三堆。
+    pub fn span<'s>(&self, terms: &'s [String]) -> Span<'s> {
+        let cap = self.cards.len() as f64 * WEAK_DF_RATIO;
+        let mut s = Span {
+            strong: Vec::new(),
+            weak: Vec::new(),
+            absent: Vec::new(),
+        };
+        for t in terms {
+            let unspaced = t.chars().next().is_some_and(is_unspaced);
+            match self.df.get(t.as_str()) {
+                // 「太常见」必须有下界：只有 1 张卡的仓库里每张卡都有每个词，
+                // 光按比例算会把全部查询词判成 weak、分母恒为 0——那是标准错，不是词太常见。
+                Some(&d) if d > 1 && d as f64 > cap => s.weak.push(t.as_str()),
+                Some(_) => s.strong.push(t.as_str()),
+                // 「把提」「醒块」这种跨词边界的二元组从来不在索引里，那是分词的产物，
+                // 不是「你的词汇不在这个仓库里」。只有带空格的词 df=0 才算证据。
+                None if unspaced => {}
+                None => s.absent.push(t.as_str()),
+            }
+        }
+        s
+    }
+
     /// BM25 打分，返回按分数降序的 (下标, 分)。
     pub fn bm25(&self, query: &str) -> Vec<(usize, f64)> {
         let n = self.cards.len() as f64;
-        let q: Vec<String> = {
-            let mut seen = HashMap::new();
-            let mut v = Vec::new();
-            for t in tokenize(query) {
-                if seen.insert(t.clone(), ()).is_none() {
-                    v.push(t);
-                }
-            }
-            v
-        };
+        let q = Self::query_terms(query);
         if q.is_empty() || n == 0.0 {
             return Vec::new();
         }
@@ -301,5 +346,79 @@ mod tests {
         let idx = Index::build(&cards);
         assert_eq!(idx.in_degree(2), 2);
         assert_eq!(idx.in_degree(0), 0);
+    }
+
+    #[test]
+    fn query_terms_dedupe_and_keep_first_seen_order() {
+        let raw = tokenize("lock lock file src/store.rs");
+        let raw_len = raw.len();
+        let terms = Index::query_terms("lock lock file src/store.rs");
+        // 同一词只占一格：matched 的 of 才是「一共几个词」。
+        let mut seen = HashSet::new();
+        let firsts: Vec<String> = raw.into_iter().filter(|t| seen.insert(t.clone())).collect();
+        assert_eq!(terms, firsts);
+        assert!(terms.len() < raw_len);
+    }
+
+    #[test]
+    fn hit_terms_are_words_that_actually_met() {
+        // 四张卡才让「过半」有含义：只有一张卡时 df=1 也算太常见，分母会空。
+        let cards = vec![
+            card("src/a.rs", "甲", "-"),
+            card("src/b.rs", "乙", "-"),
+            card("src/tokenize.rs", "分词与倒排构建", "-"),
+            card("src/d.rs", "丁", "-"),
+        ];
+        let idx = Index::build(&cards);
+        let terms = Index::query_terms("分词 rendering");
+        let span = idx.span(&terms);
+        let hit = idx.hit_terms(2, &span.strong);
+        assert!(hit.contains(&"分词"));
+        assert!(!hit.contains(&"rendering"));
+        assert_eq!(hit.len(), 1);
+    }
+
+    #[test]
+    fn span_separates_absent_weak_and_strong() {
+        // 三张卡都带 src/ 与 .rs：这两个词元 df=3（过半，算太常见）；
+        // 「分词」只在一张卡里（算有判别力）；rendering 一张卡都没有（算本仓没有）。
+        let cards = vec![
+            card("src/a.rs", "甲", "-"),
+            card("src/b.rs", "乙", "-"),
+            card("src/c.rs", "分词", "-"),
+        ];
+        let idx = Index::build(&cards);
+        let terms = Index::query_terms("src rs 分词 rendering");
+        let span = idx.span(&terms);
+        assert!(span.weak.contains(&"src") && span.weak.contains(&"rs"));
+        assert_eq!(span.strong, vec!["分词"]);
+        assert_eq!(span.absent, vec!["rendering"]);
+    }
+
+    #[test]
+    fn single_card_repo_has_no_weak_words() {
+        // 只有一张卡时每张卡都包含每个词：按比例算会把分母清空，让命中行永远印「一个也没命中」。
+        let cards = vec![card("src/a.rs", "分词与倒排构建", "-")];
+        let idx = Index::build(&cards);
+        let terms = Index::query_terms("分词");
+        let span = idx.span(&terms);
+        assert!(span.weak.is_empty(), "{:?}", span.weak);
+        assert_eq!(span.strong, vec!["分词"]);
+    }
+
+    #[test]
+    fn unspaced_bigrams_are_not_absent_words() {
+        // 中文查询的二元组大多不会出现在卡片里，但那是分词产物，不该被当成「本仓没有这个词」。
+        let cards = vec![
+            card("src/a.rs", "甲", "-"),
+            card("src/b.rs", "乙", "-"),
+            card("src/card.rs", "把提醒块写进卡片的说明", "-"),
+            card("src/d.rs", "丁", "-"),
+        ];
+        let idx = Index::build(&cards);
+        let terms = Index::query_terms("把提醒块写进解析");
+        let span = idx.span(&terms);
+        assert!(span.absent.is_empty(), "{:?}", span.absent);
+        assert!(!span.strong.is_empty() || !span.weak.is_empty());
     }
 }

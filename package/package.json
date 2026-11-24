@@ -1,6 +1,6 @@
 {
   "name": "dsh-dk",
-  "version": "0.2.7",
+  "version": "0.3.2",
   "private": true,
   "description": "把 dk 代码索引接进 DSH：内置拉起 dk serve、注册六个原生工具、追加一句系统提示词。",
   "type": "module",
