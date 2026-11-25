@@ -1,4 +1,4 @@
-# dk — 代码认知层（SPEC v0.3.2）
+# dk — 代码认知层（SPEC v0.3.5）
 
 > 一行一张卡，一次写入一次收获。**任意体量的项目，AOCI 级治理能力，零重建成本。**
 > Rust · 不依赖 git · 不依赖 harness · 单文件分发
@@ -196,7 +196,21 @@ S 的双问铁律：能否从 path+F+R+A 推出？能推出就不写。不写会
 
 口径四点：`hints` 拼进查询，所以 hint 里的词也会出现在 `hit` 里（那正是「你给的词踩中了」的证据）；`fallback` 那种字符兜底对上的字**不在** `hit` 里（`hit` 只讲 BM25 词面）；`level:"l0"` 也带 `matched`——只出 `dirs` 时它是判断「这个方向值不值得展开」的唯一凭据；`hit` 是对**整张卡**（`path+F+R+A+S`）算的，而 `l1`/`l0` 的候选行只印 `path — F`，所以命中词常常落在你看不到的那几段里（审查实测：`l1` 下 61% 的请求至少有一个 `hit` 词不在候选行里）——要核对就上 `l2`。`paths` / `dir` / 无参模式没有 `matched`。
 
-**覆盖率 < 100% 时**：默认**不返回排序结果**，只返回 `{ status: "incomplete", managed, uncarded, uncarded_sample, next }`，`uncarded_sample` 给前 5 个未建卡路径——拒绝要可操作，不能只说「不行」。显式传 `allow_partial: true` 才给结果，且头部永久带两件东西：`coverage: { managed, carded, uncarded, pct }` 与 `partial: "本结果不含 <路径列表>"`。
+**覆盖率 < 100% 时**：默认**不返回排序结果**，只返回 `{ status: "incomplete", managed, uncarded, uncarded_sample, next }`，`uncarded_sample` 给前 5 个未建卡路径——拒绝要可操作，不能只说「不行」。`next` 的**第一句必须是只读出路**（加 `--allow-partial` / 传 `allow_partial:true` 拿走结果），不能叫人「先 `dk_sweep` 补卡」——这是跨库时最常撞到的态（别人的索引很少刚好 100%），照着那句做就是把卡写进别人的仓库；也不能只写 MCP 形状的参数（`allow_partial:true`）而让人在 CLI 里照抄（v0.3.2 修过的「拼写」问题在文案里又犯了一次）。
+
+显式传 `allow_partial: true` 才给结果，且头部永久带两件东西：`coverage: { managed, carded, uncarded, pct }` 与 `partial: "本结果不含 <路径列表>"`。
+
+**只覆盖当前仓库。** 索引以一个仓库根为界，六个工具都没有 `root` 参数（一次 `dk serve` 只服务一个 root，§9.3）。要看别的仓库的源码：`dk -C <目录> map <任务描述>` / `dk -C <目录> get <路径>` 只读查看（`-C` 是全局旗标，`dk` 自己不上溯；那个仓库的索引不全时会回 `incomplete`，加 `--allow-partial` 就拿得到结果）；**不要切会话目录过去写卡**——切过去以后 `dk_put` 写的就是那个仓库的索引。
+
+`<任务描述>` 不能省：`dk -C <目录> map` 没有任务只回一份目录树，拿不到卡片——只给命令不给参数，等于让人以为跨库读法不管用，然后退回搜文件。
+
+`paths` / `dir` 只认**库内相对路径**：绝对路径（`D:/x`、`/x`）与含 `..` 的路径直接报错。它们原来会「成功地空着回去」——`dir:"../别处"` 回 `count:0`，`paths:["../别处/a.rs"]` 回 `state:"uncarded"`，后者等于断言「这文件没建卡」，是假话；而 `../` 恰恰是想够别的仓库时最自然的第一反应。`dir:"."` 是「整个仓库」，不是「匹配不到」——但它只在 `dir` 里有这个含义：`paths:["."]` 报错并指路 `dir`（否则就是对空路径断言「这文件没建卡」）。
+
+`paths` / `get` 要的是**磁盘上真有的文件**：收目录（`get crates`）报「这是目录，看目录用 `dir`」，收拼错的名字（`get src/alhpa.rs`）报「磁盘上没有它」——否则回的是 `state:"uncarded"`，等于对目录断言「这文件没建卡」。同理 `dir` 收不存在的目录（`dir:"nope"`）报错，不再回 `count:0`。这三条与 `".."` 是同一类「成功地空着回去」，判据要按形态列全，不是补一个 `".."` 就够。
+
+`paths` / `get` 的另外两条同类假话也一并改成报错：带行号（`src/a.rs:12`）报「`paths` 里不要带行号」——按「含 `:` 即绝对路径」判会把它说成「库外路径」，而文件就在库内，等于用报错陈述一件假事实；大小写/分隔符不符（`src\alpha.rs`）按磁盘正名（`managed::canonical_rel`）与 `dk_put` 对齐，`dk_put` 一直按磁盘正名，`get` 却做纯字符串比较，同一份仓库两套规则。
+
+跨库关系也进不了 R：R 里 `code:` 形式的路径必须在库内（§8 硬门「R 目标」），否则整条拒收；不带命名空间的项只当**自由文本**——`..`、绝对路径、`D:/x`、`https://…` 照样写得进去，不校验存在性、也不连邻居，`dk_put` 回一条 `warnings`；但**库内的裸路径仍按路径连邻居**（`dk get` 的 `R:` 邻居照旧，实测 `src/alpha.rs` 会出现在 `siblings` 之外的 R 邻居里），只是不校验它还在不在——「不校验」与「不连邻居」是两件事，别照着一句含糊话去清理 R 解析。判据是「含 `/` 且不是 `code:` / `database://`」，不是原来的「不含 `:`」——后者把带盘符的路径与 URL 当成「有命名空间」静默放过了，与本节这句话正好相反。跨库事实的正确写法是写进卡片正文。
 
 ### dk_get
 入参：`{ paths: string[] }`
@@ -313,7 +327,7 @@ S 的双问铁律：能否从 path+F+R+A 推出？能推出就不写。不写会
 | 层 | 载体 | 强度 | 代价 |
 |---|---|---|---|
 | **L1 工作区声明** | `AGENTS.md` 受管块（`<!-- dk:begin -->` … `<!-- dk:end -->`） | 弱，但**跨 harness**：任何读 AGENTS.md 的工具都认 | 常驻约 150 字 |
-| **L2 系统提示词** | DSH 插件注入一句（§9.3） | 弱，随 harness | 常驻一句话 |
+| **L2 系统提示词** | DSH 插件注入一段（§9.3） | 弱，随 harness | 常驻约 300 字（见 `package/index.js` 的 `GUIDANCE`；其中两个分句是跨库：怎么读、读不了怎么只读） |
 | **L3 SKILL** | `/dk`，用户手动调用 | **强**，因为它把纪律重新摆到最新位置 | 不常驻，用户按需 |
 
 AGENTS.md 受管块内容（不得出现 harness 工具名，见 A5）：
@@ -372,7 +386,7 @@ AGENTS.md 受管块内容（不得出现 harness 工具名，见 A5）：
 |---|---|
 | 行格式 | 不匹配 `^\S.*?@[0-9a-f]{8}(\[[A-Za-z0-9]{2,8}\])?:\s*F:` 即拒 |
 | 行尾自校验 | blake3(前半行) 前 8 位不符即拒 |
-| R 目标 | `code:` 形式的路径必须存在于工作区（`canonicalize` + 在根内 + 是文件），否则整条拒收 |
+| R 目标 | `code:` 形式的路径必须存在于工作区（`canonicalize` + 在根内 + 是文件），否则整条拒收；其它前缀与不带前缀的项只当自由文本，不校验（库外路径仅在 `dk_put` 的 `warnings` 里点名） |
 | 路径形态 | 空 / 绝对路径 / 含 `:` 或 `@` / 含 `..` / 落在内置目录或 `.dkignore` 内 / 已知二进制扩展名 —— 全拒 |
 | 路径存在性 | `canonicalize(root.join(rel))` 必须成功、必须 `starts_with(root)`（防越界读仓库外文件）、必须是普通文件、必须 ≤1 MiB |
 | 路径受管性 | 必须能被 `walk` 收到；写进去但 walk 不收 = 立刻变成「失联」，此后所有 `dk_map` 拒绝服务 |
@@ -418,7 +432,7 @@ dk/
   package/                   # DSH 插件（零依赖纯 JS，§9.3）
     package.json             # type:module；dsh.bundle.patch 指向 cordis.patch.yml
     cordis.patch.yml         # 插入插件条目（binary / root / prompt / callTimeoutMs）
-    index.js                 # 拉起 dk serve + 注册六个工具 + 一句系统提示词
+    index.js                 # 拉起 dk serve + 注册六个工具 + 一段系统提示词
 ```
 
 依赖：`blake3` `serde` `serde_json` `unicode-segmentation` `unicode-normalization` `clap` `ignore` `anyhow`。全纯 Rust，无 C 依赖，单文件分发。
@@ -442,7 +456,7 @@ CLI 的 `dk get/map/put/sweep` 保留给人和脚本；模型侧一律走 `serve
 |---|---|---|
 | **内置拉起** | `apply()` 时 spawn `dk serve`，进程死了自动重启 | 用户不需要配 `.mcp.json`、不需要自己起进程 |
 | **原生工具名** | 把六个工具注册成 `dk_map` 而非 `mcp__xxx__dk_map` | 名字短、提示词干净 |
-| **系统提示词** | 可开关（默认开），追加一句**条件式**提示：仓库有 `.dk/map.txt` 时改代码前先 `dk_map` 或 `dk_get`，没有就别擅自建、先问用户 | 唯一常驻的自动提醒；写成条件句是因为它出现在**任何**会话里（含非代码仓库），陈述句在那些场景是假话 |
+| **系统提示词** | 可开关（默认开），追加**条件式**提示：仓库有 `.dk/map.txt` 时改代码前先 `dk_map` 或 `dk_get`，没有就别擅自建、先问用户；末尾再收两句跨库读法——要看的目录有 `.dk` 就用 `dk -C <目录> map <任务描述>` 只读查看，别切过去写卡；它回 `incomplete` 就加 `--allow-partial` 只读拿走结果，别去补卡；探测到绝对路径时，段末再点名一句「上面说的 dk 就是这个二进制」，**路径一律写正斜杠**（反斜杠那串粘进 Git Bash 会被当成转义，实测 exit 127，人只会以为路径错了而退回 PATH 上的旧 `dk`） | 唯一常驻的自动提醒；写成条件句是因为它出现在**任何**会话里（含非代码仓库），陈述句在那些场景是假话；跨库那句治的是「明明有索引却直接搜文件」与「切过去把卡写进别人仓库」，命令必须带 `<任务描述>`——不带只回目录树，模型跑一次拿不到卡片就会退回搜文件；`--allow-partial` 那句治的是「索引不全时被推去补别人的卡」；点名二进制治的是「照抄落到旧版本」——本机 PATH 上是 0.2.7，旧的 `next` 还在教「先 dk_sweep 补卡」，而命令成功退出，看不出问题 |
 
 **提示词靠依赖注入等就绪，不靠一次性探测。** `apply()` 可能跑在 `dsh-system-prompt` 之前，
 那一刻 `ctx.get('systemPrompt')` 是 `undefined`；照旧写法会静默跳过、此后永不重试，表现为
@@ -453,8 +467,7 @@ CLI 的 `dk get/map/put/sweep` 保留给人和脚本；模型侧一律走 `serve
 
 **不注册任何钩子。** 它没有业务逻辑，只有转发。
 
-实现是 `package/index.js`，433 行，其中约 190 行是六份工具 schema 的声明（与 `serve::handle`
-逐参数对齐），真正的手写逻辑约 240 行：一个按 root 复用的 `dk serve` 客户端（NDJSON 分行、
+实现是 `package/index.js`，456 行，其中 107 行是六份工具 schema 的声明（`package/index.js:278-384`，与 `serve::handle` 逐参数对齐），真正的手写逻辑 349 行：一个按 root 复用的 `dk serve` 客户端（NDJSON 分行、
 **pending 按子进程归属**、按 id 结单、超时、中止、死亡重起）+ 仓库根上溯 + 二进制探测 +
 注册循环 + 一段提示词。零 `@deepseek-ai/*` 运行时依赖，`Config` 用 `createRequire` 探测
 `@deepseek-ai/schemastery`，探测不到只是没有设置页表单，不影响插件工作。
@@ -571,15 +584,19 @@ MCP 壳（`dk mcp`）冒烟：喂 `initialize` / `notifications/initialized` / `
 
 DSH 插件壳用 fake-ctx 跑真链路（`package/test/e2e.mjs`，不启动 DSH，按插件契约伪造
 `ctx.tools.register` / `ctx.effect` / `ctx.get('workingDirectory')` / `ctx.get('systemPrompt')`），
-**27 条断言全过**：
+**70 条断言全过**（另有 12 条逐工具检查只计失败、不进 70 这个数）：
 
 | 组 | 断言 |
 |---|---|
 | 元信息 | `name=dsh-dk`；`inject` 只要 `['tools']`；无 schemastery 时不抛错 |
 | 工具注册 | 六个工具按原生名注册；都有 `parameters` 与 `output.render`；写工具 `isConcurrencySafe` 为假、读工具为真 |
-| 提示词 | 只加一段、`order=11500`、文案里点名 `dk_map`/`dk_put`、**不含任何 harness 工具名**（正则扣掉 `dk_*` 后无 read/write/edit/ask_user） |
-| 只读链路 | `dk_check` 返回对象；`dk_map` 命中并给出卡片行；`dk_get` 给出 `fresh`；`output.render` 产出 text |
-| 写链路（临时仓库） | `dk_init` 建出 `.dk/` 与 `.dkignore`；`dk_sweep` 认出 2 个新文件；写 1 张卡后 **覆盖率 1/2 时 `dk_map` 返回 `status:incomplete`**（§3 不完整即拒绝）；`allow_partial:true` 放行并同时带 `coverage` 与 `partial`（点名未建卡的 `src/beta.rs`）；补第二张后 `check` 覆盖 2/2 且 `complete`；同一进程内立刻能查到 |
+| 提示词 | 只加一段、`order=11500`、文案里点名 `dk_map`/`dk_put`、末尾带跨库读法（`dk -C <目录> map <任务描述>` 只读、不切过去写卡；不带任务描述只回目录树，故命令必须带）、**不含任何 harness 工具名**（正则扣掉 `dk_*` 后无 read/write/edit/ask_user）；点名**实跑的那个二进制**（PATH 上的 `dk` 可能是旧版本，照抄会拿到旧语义） |
+| 三处声明不许漂 | 六个工具的描述在插件（`SPECS`）与 `dk mcp`（`tool_specs`）两侧**逐字相同**（起一个真 `dk mcp` 收 `tools/list` 对拍；v0.3.3 实测曾差 38 字）；`dk_map` 描述与提示词里的跨库命令都带 `<任务描述>`；A5 覆盖**六条工具描述与 SKILL**，不只提示词 |
+| 第三层 SKILL | `skills/dk/SKILL.md` 的跨库命令与提示词同形（含 `<任务描述>`）、建库前先问人（不在别人的仓库里 `dk_init`） |
+| 库外路径 | `dir`/`paths` 的 `..` 与绝对路径**报错**（原来 `dir` 回 `count:0`、`paths` 回 `uncarded`，都是假话）；`dir:"."` 给整个仓库；`dk_get` 同样拒；`paths:"."` 与带行号（`SPEC.md:12`）也报错并各自指路（整库用 `dir`、行号留到读源码时）；未知参数 `root` 的报错给出路；没索引的目录 hint 讲清 `-C` 要指仓库根且不复读「执行 dk init」；**目录、拼错的文件名、不存在的 `dir` 同样是假话**——`get crates` 报「这是目录」、`get src/alhpa.rs` 报「磁盘上没有它」、`dir:"nope"` 报「只认库内已存在的目录」，都不再回 `uncarded` / `count:0` |
+| 只读链路 | `dk_check` 返回对象；`dk_map` **真出卡片**（`cards.length > 0`，原断言 `|| map.status` 恒真，连 `uninitialized` 都算通过）；`output.render` 的卡片行带指纹与 `F:`；`dk_get` 给出 `fresh` |
+| CLI 与核心同答 | 没索引的目录里 `dk get`/`sweep`/`check` 与 `dk map` 给同一句 hint：`check` 不许回「覆盖率 100% | 一致」、`sweep` 不许回「还差 0」（原来这两个子命令绕过 `serve::handle`，同一个空目录一个说没有索引、一个说全绿）；**目录不存在**时 `check` 与 `map` 也同答「工作目录不存在」（「目录不在」与「没有索引」对应两种下一步，`serve::require_repo` 是唯一出口） |
+| 写链路（临时仓库） | `dk_init` 建出 `.dk/` 与 `.dkignore`；`dk_sweep` 认出 2 个新文件；写 1 张卡后 **覆盖率 1/2 时 `dk_map` 返回 `status:incomplete`**（§3 不完整即拒绝）；`incomplete` 的 `next` 第一句是只读出路（含 `--allow-partial`、含「别在别人仓库里补」），照它敲 `dk -C <临时仓库> map <任务> --allow-partial` 真能出卡；`allow_partial:true` 放行并同时带 `coverage` 与 `partial`（点名未建卡的 `src/beta.rs`）；补第二张后 `check` 覆盖 2/2 且 `complete`；同一进程内立刻能查到 |
 | 进程与错误 | 换 root 会重起子进程（受管文件数跟着换）；二进制不存在时报「无法启动 … ENOENT（把 binary 配成 dk 可执行文件的绝对路径）」 |
 
 一个实测结论值得记下来：`dk_init` 只建 `.dk/` 与 `.dkignore`，**不建空的 `map.txt`**——
@@ -741,3 +758,6 @@ v0.3.1 交出去后再做一轮独立复核（子代理拿已装的二进制实�
 | 2026-11-25 | v0.3.0：`matched` 分母换成**有判别力的词**（`df > 1` 且 `df > 卡片数 × 0.5` 算太常见，命中它几乎是必然的；`df > 1` 下界保证单卡仓库不会分母归零），并新增 `absent` / `absent_n` / `weak_n` / `total`（四个数可自相对账：`total = of + weak_n + absent_n + 丢弃的无空格二元组`）——把「你的词根本不在这个仓库里」和「排错了」分开讲；零命中的 `hint` 按「本仓没有这些词 / 词都太常见 / 分词后一个词都没有」三种原因分别措辞（emoji、纯标点、孤字走第三种）；`search.rs` 新增 `Span` 与 `span()`（strong / weak / absent 三堆）、`hit_terms` 改吃 `&[&str]`；`serve.rs` 三档 `hint` 重写、`confidence: none` 的文案不再让人以为自己问法有问题；CLI 命中行改为「命中 h/o 个有判别力的查询词…；另有 n 个词本仓没有…」，`of=0` 时只印 absent、且不再被「无匹配」那句吃掉 | 实测（24 条中英对照 + 12 条语言探针）：名次 24/24 不变，`of` 均值 11.9 → 5.3；报警判据换分母后假警报从 20 次降到 2 次，但召回从 100% 塌到 14%——**换分母消掉了虚词噪声，没有产生新的判别力**，报警阈值这条路就此封死，能给的只有证据本身；12 条外语探针里 10 条 `none` + 0 卡（德/日/英三条踩到词面），若不说清「本仓没有这些词」，用户只会以为是自己问法不好 |
 | 2026-11-25 | v0.3.1：按 v0.3.0 的独立复核修六处「实现与自己文案不一致」（详见 §10 第 1.11 层）——CLI 在 `fallback` 档不再当着卡片说「本仓一张卡都没有」；分母口径从「虚词不算」改成「本仓出现过、且不是过半卡片都有的词」（代码里根本没有停用词表）；`serve.rs` 新增 `arg_keys()`/`reject_unknown_args()`，未知参数名直接报错（`additionalProperties: false` 从声明变成行为）；SPEC 的外语 `absent_n` 结论按实测重写；`--level l0` 补印 `hint`；`surface` 档 `hit` 为空时单独措辞 | 复核用已装的二进制实测，六处全是「说了做不到」，没有一处在排序侧：`dk map 卡` 返回 8 张卡却说「1 个词本仓一张卡都没有」，是 `df=0` 的单字被丢弃、卡片正文却有它；`hint` 拼成 `hint`（少 s）被静默忽略，模型以为给了提示。教训：证据字段有名字只是第一步，文案、CLI、错误处理不跟着改，调用方读到的仍是假话 |
 | 2026-11-25 | v0.3.2：按第二轮对抗复核修参数层六处——CLI 无参 `dk map` 不再被互斥守卫打死（`level` 改 `Option<String>`、只在人真给了才转发；`task` 为空就不放 `task`）；serve 侧「显式传默认值」不算违规（`level:"l2"`、`allow_partial:false` 放行）；`task`/`dir`/`level`/`allow_partial` 类型不符一律报错（`opt_str` + `match`），`task:""` 与空 `paths` 也报错；`print_matched` 按输出形态（卡片/目录）措辞，`l0` 的 hint 说「这几个方向」；单字查询不再说「按相邻二元组切」；`dk_check` 的未知参数错误改成「不收参数」；`PutEntry` 加 `deny_unknown_fields`；`mcp` 与 `serve` 共用同一套 `dk_` 前缀宽容；`dk_init` 先校验参数再建目录；`k` 的说明改成「卡片张数，不含 R 邻居」；e2e 补三条壳级断言（33 → 36：裸 `dk map` 必须出目录树 / 没有 task 给 `--level` 必须报错 / 空 `paths` 必须报错） | 复核实测：上一轮加的守卫把 CLI 唯一的入口用法（`dk map` 无参给目录树）打成了报错，而五处文档仍写着「无参给目录树」——e2e 只走 serve 路径，33 条断言一条都没发现。守卫要判的是「这个值会不会改变行为」，不是「这个字段有没有出现」；壳与核心的约定必须两端各测一次 |
+| 2026-11-25 | v0.3.3：跨库读法补进三层里的两层——`package/index.js` 的 GUIDANCE 末尾加「要看本仓库之外的代码：那个目录有 `.dk` 就用 `dk -C <目录> map` 只读查看，不要切过去写卡；没有就照常搜」；`skills/dk/SKILL.md`「动手前」加同一条；`dk_map` 的描述（`package/index.js` 的 `SPECS` 与 `crates/dk-core/src/mcp.rs` 的 `tool_specs`，两处同句）点名「只覆盖当前仓库」；SPEC §3 补「只覆盖当前仓库」一段，§9.3 与 §10 断言表同步；`package/test/prompt.test.mjs` 5 条、`e2e.mjs` 36 → 38 条；**第二轮对抗复核又修五处**：跨库命令六处补 `<任务描述>`（不带只回目录树，模型照做一次拿不到卡片就会退回搜文件）、`dk_map` 描述两侧补到**逐字相同**（此前插件 398 字 / MCP 360 字）、`dir`/`paths`/`dk_get` 收到库外路径改为报错（原来 `dir` 回 `count:0`、`paths` 回 `uncarded`——后者等于断言「这文件没建卡」）、`dir:"."` 给全库而不是「匹配不到」、四处未初始化 hint 改成「`-C` 要指向仓库根；要建先问这个仓库的人」（原来直接叫人 `dk init`，等于授意在子目录建出第二份 `.dk/`）、未知参数 `root` 的报错补上出路、`dk_put` 对 R 里的库外裸路径给 `warnings`；`e2e.mjs` 38 → 50 条（新增「三处声明逐字相同」「SKILL 同形」「库外路径」「没索引的 hint」四组） | 审计发现三层引导与工具描述全以「本仓库」起句：A 仓干活要看 B 仓源码时，没有一句说清怎么办——轻则 B 明明有索引却照样搜文件（白花时间），重则把跨库引用写进 R，§8 硬门「R 目标」整条拒收，agent 要么干脆不记、要么切目录过去 `dk_put`，把卡写进自己没读全的仓库。L1 受管块**不动**：它是写进用户仓库的治理契约，改措辞等于给所有已接入仓库报一次 stale；不加 `root` 参数：那会打破「一个 `dk serve` 一个 root」与按 root 复用子进程。复核教训：**引导里的命令要照着真跑一遍**——命令写对、参数缺一个，效果等于没写；而「成功地空着回去」（`count:0`、`uncarded`）比报错更难被发现，它长得像答案 |
+| 2026-11-25 | v0.3.4：v0.3.3 的第三轮对抗复核修七处（复核把「照抄引导必须拿到卡片」当判据，撞出的都是「文案说得对、跑起来另有说法」）——① `dk_map` 回 `incomplete` 时的 `next` 改成「先给只读出路」（含 `--allow-partial` 与「别在别人仓库里补」），原来是「先 `dk_sweep` 补卡」＋只写 MCP 形状的 `allow_partial:true`，CLI 照抄跑不通，等于把人推去补别人的卡；GUIDANCE（现七句 296 字）、`/dk` SKILL、`dk_map` 描述三处同步；② `dk check` / `dk sweep` 在无索引目录不再「成功地空着回去」（原来回「覆盖率 100% ｜ 一致」「还差 0」），与 `dk_map` 共用 `serve::NO_INDEX_HINT`；③ `paths`/`get` 新增 `repo_file`：按磁盘正名（`managed::canonical_rel`，与 `dk_put` 对齐）、`paths:"."` 报错并指路 `dir`、带行号报「不要带行号」（原来按「含 `:` 即绝对」判，把库内文件说成库外路径）；④ `repo_relative` 的绝对路径判定改成「`/` 开头、含 `://`、或 `盘符:`」，不再「含 `:` 即绝对」；⑤ R 告警判据从「不含 `:`」改成「含 `/` 且不是 `code:` / `database://`」，`D:/x` 与 `https://…` 从此也告警；⑥ e2e 的 `dk_map 有命中` 由恒真式（`\|\| map.status`，连 `uninitialized` 都算过）改为 `cards.length > 0`，并补 `paths` 绝对路径、`paths:"."`、带行号、A5 覆盖六条描述与 SKILL、CLI 三子命令同答、`incomplete` 照抄可跑七组断言（50 → 62 条）；⑦ 版本号对齐：`Cargo.toml` / `package/package.json` / 本文标题此前仍 0.3.2 | 复核给的是判据不是清单：它指出「命令照抄必须拿到卡片」只在别家索引 100% 时成立，而真实场景多半不全——**补丁的成败取决于最坏的那条支路**。同一条教训第二次出现：v0.3.2 是「CLI 无参被互斥守卫打死」，这次是「文案里的参数只有 MCP 形状」与「两个子命令绕过 `handle` 各说各话」，都是壳与核心、文档与实现只测了一端。 |
+| 2026-11-25 | v0.3.5：v0.3.4 的第四轮对抗复核修六处（复核把判据改成「照抄引导得到的必须是**同一个二进制**的语义」，并列出「成功地空着回去」的形态清单）——① `repo_file` 只做字符串归一，于是 `dk_get crates`、`dk_get package/`、拼错的 `src/alhpa.rs` 全回 `state:"uncarded"`＝**对目录断言「这文件没建卡」**（新增 `require_real_file`：正名失败报「磁盘上没有它」，正名成目录报「这是目录，看目录用 dir」）；② `dir:"nope"` 回 `count:0`，与①同类（现报「只认库内已存在的目录」）；③ `check`/`sweep` 对「目录不存在」说「先问这个仓库的人」，而 `map` 说「工作目录不存在」——两句话对应两种下一步，抽出 `serve::require_repo`（先 `is_dir` 再 `is_initialized`）；④ 提示里写的 `dk` 与插件实跑的二进制可能不是同一个（本机 `command -v dk` 是 0.2.7，插件跑 0.3.x；照抄那句命令拿到的 `next` 还是「先 dk_sweep 补卡」，正是这段话要治的病），GUIDANCE 改成 `guidanceFor(server.binary)`，探测到绝对路径就把二进制写进提示；⑤ SPEC §3 原写「不带命名空间的 R 项不校验、也不会连上邻居」是假话（库内裸路径仍按路径连邻居，实测 `src/alpha.rs` 出现在 R 邻居里），改成「不校验存在性 ≠ 不连邻居」；⑥ 「一句系统提示词」改成「一段」——复核先只找出三处（§8 结构树、`package/README.md` 配置表、`package.json` description），第五轮又补出两处（`package/index.js` 文件头、`package/cordis.patch.yml` 注释）。⑦ 第五轮复核（agent-5/6）修四处「文案与实跑不一致」：提示里的二进制路径改**正斜杠**（反斜杠那串粘进 Git Bash 是 exit 127，人只会以为路径写错了、退回 PATH 上的旧 `dk`，恰好落回这段提示要治的病）；GUIDANCE 引号里的「索引不全」改成真状态名 `incomplete`（输出里没有那四个字）；§9.3 同一句也改；§9.3 的「441 行」改成实测行数（456）。断言 62 → 70（新增：`get`/`paths` 收目录、拼错的文件名、不存在的 `dir`、提示词点名实跑二进制、目录不存在时两壳同答、提示里的路径用正斜杠、提示词不引用实跑里没有的状态字符串）。⑧ 终检（只读，agent-7）又抓出两处：§9.3 的拆分数字跟着总数一起漂了（原写「约 190 行 schema / 265 行手写」，实测 `package/index.js:278-384` 是 107 行、手写 349 行——190 是 v0.2.2「335 行」时代的数，改总数时没跟着改，265 又是按 190 反算的，于是两个数一起错）；`Cargo.toml` 与 `crates/dk-core/Cargo.toml` 还声明着 rayon 而源码零使用、§9.1 却写「不引 rayon」，删掉这个依赖（`check.rs` 用的是 `std::thread::scope`，本来就够）。顺带给 `dir:"nope"` 的报错补了出路（同类报错都有下一步，它原来只有「磁盘上没有它」）。**保留** GUIDANCE 第七句：复核建议删掉它（与 `incomplete.next` 重复），但常驻那句管的是模型**没机会看到 `next`** 的场合（索引刚好 100% 时它也在），删了等于把约束绑在「一定会走到 incomplete」上。教训：假话的形态要**列清单再一条条测**——「越界」只是一种，目录、拼错的名字、不存在的目录同样会「成功地空着回去」；而「引导里的命令照抄能跑」还缺一个前提：**在哪一个二进制上照抄**。 |

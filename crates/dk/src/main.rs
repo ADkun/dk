@@ -87,6 +87,9 @@ fn run() -> Result<()> {
             Ok(())
         }
         Cmd::Sweep { limit } => {
+            // 没有 .dk 时「还差 0 个」是假绿：同一目录下 dk_map 会说「这里没有索引」，
+            // 两个壳对同一个事实给两套答案，其中一套会让人以为检查过了（审查 P1-2）。
+            serve::require_repo(&store)?;
             let b = sweep::sweep(&store, limit)?;
             println!(
                 "受管 {} 文件｜已建卡 {}｜还差 {}",
@@ -112,6 +115,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         Cmd::Check { json: as_json } => {
+            serve::require_repo(&store)?;
             let r = check::run(&store)?;
             if as_json {
                 println!("{}", serde_json::to_string_pretty(&r)?);

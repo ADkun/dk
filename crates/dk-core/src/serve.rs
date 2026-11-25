@@ -20,6 +20,27 @@ const SPREAD: usize = 5;
 /// `matched.absent` 最多列几个词：够换词就够，长查询不该刷屏；总数另给 `absent_n`。
 const ABSENT_LIST_MAX: usize = 8;
 
+/// 「这个目录里没有索引」的唯一一句话。四处（map / get / sweep / check）与 CLI 的
+/// sweep / check 共用它：原来只有 serve 侧有这句话，CLI 在同一个目录回「一致」——同一个
+/// 事实两套答案，其中一套是假绿（审查 P1-2）。
+pub const NO_INDEX_HINT: &str = "此目录里没有 dk 索引（dk 不上溯：-C 要指向仓库根，指到子目录也会落到这里）。要在这里建索引先问这个仓库的人；只是要看别的仓库的源码，就只读，别建";
+
+/// CLI 的 sweep / check 与 serve 侧共用这段前置判断：目录不存在 ≠ 没有索引。同一个事实
+/// 两套答案会把人引到错误的下一步（审查 P2-3：map 说「工作目录不存在」，check 说「先问这个
+/// 仓库的人」）。
+pub fn require_repo(store: &Store) -> Result<()> {
+    if !store.root().is_dir() {
+        bail!(
+            "工作目录不存在：{}（-C / root 要指向真实存在的目录）",
+            store.root().display()
+        );
+    }
+    if !store.is_initialized() {
+        bail!("{}", NO_INDEX_HINT);
+    }
+    Ok(())
+}
+
 pub const TOOLS: [&str; 6] = [
     "dk_init", "dk_map", "dk_get", "dk_put", "dk_sweep", "dk_check",
 ];
@@ -85,8 +106,77 @@ fn reject_unknown_args(name: &str, args: &Value) -> Result<()> {
             } else {
                 format!("dk_{name} 只收 {}", allowed.join(" / "))
             };
-            bail!("未知参数 {key}：{takes}（拼错的参数会被静默忽略，所以这里直接报错）");
+            // 未知参数别只纠错：想够别的仓库的人最容易在这里撞墙（root / repo / cwd），
+            // 光说「不收」他还是没路走。
+            let elsewhere = match name {
+                "map" => "（要看别的仓库：终端里跑 dk -C <目录> map <任务描述>，只读）",
+                "get" => "（要看别的仓库：终端里跑 dk -C <目录> get <路径>，只读）",
+                _ => "",
+            };
+            bail!(
+                "未知参数 {key}：{takes}（拼错的参数会被静默忽略，所以这里直接报错）{elsewhere}"
+            );
         }
+    }
+    Ok(())
+}
+
+/// 路径参数最容易越界，而越界会「成功地空着回去」：dir:"../别处" 回 count:0，
+/// paths:["../别处/a.rs"] 回 state:"uncarded"——后者等于断言「这文件没建卡」，是假话。
+/// 索引以一个仓库根为界（§3），越界就直说该去哪儿看，别拿一份空结果让人自己猜。
+fn repo_relative(kind: &str, raw: &str) -> Result<String> {
+    let mut p = raw.trim().replace('\\', "/");
+    while let Some(rest) = p.strip_prefix("./") {
+        p = rest.to_string();
+    }
+    let p = p.trim_end_matches('/').to_string();
+    if p == "." {
+        return Ok(String::new());
+    }
+    if p.is_empty() {
+        bail!("{kind} 里不能有空字符串：给一个仓库内的相对路径");
+    }
+    // "D:/x"、"//server/share"、"/etc/x"、"https://…" 都是库外；段里有 ".." 就是往上爬。
+    // 注意不能拿「含 :」当绝对路径：模型最常给的是带行号的路径（src/a.rs:12），
+    // 那种要单独说「别带行号」，否则这句报错在陈述假事实——文件明明就在库内。
+    let absolute = p.starts_with('/')
+        || p.contains("://")
+        || (p.len() >= 2 && p.as_bytes()[1] == b':' && p.as_bytes()[0].is_ascii_alphabetic());
+    let climbs = p.split('/').any(|seg| seg == "..");
+    if absolute || climbs {
+        bail!(
+            "{kind} 只认本仓库相对路径（收到 {raw}）：索引以一个仓库根为界，库外读不到也写不进。要看别的仓库：dk -C <目录> map <任务描述> 只读查看"
+        );
+    }
+    Ok(p)
+}
+
+/// 单个文件的路径参数：在 `repo_relative` 之上补三条——不许带行号、不许用 "." 冒充文件、
+/// 存在就按磁盘正名（Windows 大小写 / 符号链接）。正名要在这里做：`dk_put` 走的是
+/// `managed::verify`，会正名；`dk_get` 若只做字符串比较，同一个文件就成了「未建卡」，
+/// 调用方于是再补一张卡（白跑一趟）。
+fn repo_file(root: &std::path::Path, kind: &str, raw: &str) -> Result<String> {
+    let p = repo_relative(kind, raw)?;
+    if p.is_empty() {
+        bail!("{kind} 要的是文件，不是整个仓库：整库用 dir: \".\"（或给 task）");
+    }
+    if p.contains(':') {
+        bail!("{kind} 里不要带行号（收到 {raw}）：这里只认仓库相对路径，行号请在读源码时用");
+    }
+    Ok(crate::managed::canonical_rel(root, &p).unwrap_or(p))
+}
+
+/// 查不到卡时先验「磁盘上真有这个文件」。对目录、拼错的名字回 uncarded 等于断言
+/// 「这文件没建卡」，正是 repo_file 上面那句判词（审查 P1-2）；而正名失败时 repo_file
+/// 会退回原字符串，所以这里重跑一次 canonical_rel 才知道它在不在。
+fn require_real_file(root: &std::path::Path, kind: &str, rel: &str) -> Result<()> {
+    let Some(canon) = crate::managed::canonical_rel(root, rel) else {
+        bail!(
+            "{kind} 里没有这个文件（收到 {rel}）：磁盘上没有它——拼错了？要看整个目录用 dir: \"<目录>\""
+        );
+    };
+    if root.join(&canon).is_dir() {
+        bail!("{kind} 要的是文件，这是目录（收到 {rel}）：看目录用 dir: \"{canon}\"");
     }
     Ok(())
 }
@@ -181,7 +271,7 @@ fn init(store: &Store, args: &Value) -> Result<Value> {
 fn map(store: &Store, args: &Value) -> Result<Value> {
     if !store.is_initialized() {
         return Ok(
-            json!({"status": "uninitialized", "hint": "此仓库还没有 dk 索引，请人执行 dk init"}),
+            json!({"status": "uninitialized", "hint": NO_INDEX_HINT}),
         );
     }
     let (cards, _) = store.load()?;
@@ -242,8 +332,8 @@ fn map(store: &Store, args: &Value) -> Result<Value> {
     if args.get("paths").is_some_and(|v| !v.is_null()) {
         let want: Vec<String> = arg_strs(args, "paths")?
             .iter()
-            .map(|s| s.replace('\\', "/"))
-            .collect();
+            .map(|s| repo_file(store.root(), "paths", s))
+            .collect::<Result<Vec<_>>>()?;
         // 空数组 / 空字符串都给不出卡片，却会回一份「成功但空」的结果：说清楚比留白好。
         if want.is_empty() {
             bail!("paths 不能为空：给至少一个仓库内路径，或改用 task / dir");
@@ -253,7 +343,10 @@ fn map(store: &Store, args: &Value) -> Result<Value> {
         for w in want {
             match cards.iter().find(|c| c.path == w) {
                 Some(c) => lines.push(c.render()),
-                None => unknown.push(w),
+                None => {
+                    require_real_file(store.root(), "paths", &w)?;
+                    unknown.push(w)
+                }
             }
         }
         return Ok(json!({"mode": "paths", "cards": lines, "uncarded": unknown}));
@@ -261,14 +354,29 @@ fn map(store: &Store, args: &Value) -> Result<Value> {
 
     // 目录切片：把某目录下所有卡原样给出（L1）。
     if let Some(d) = dir_arg.as_deref().filter(|d| !d.is_empty()) {
-        let d = d.trim_end_matches('/').replace('\\', "/");
+        // "." 与 "" 是「整个仓库」，不是「匹配不到任何卡」：后者同样是空结果假话。
+        let mut d = repo_relative("dir", d)?;
+        if !d.is_empty() {
+            // 不存在的目录回 count:0 与「这文件没建卡」同类（审查 P2-2）：先验它是库内真目录。
+            let Some(canon) = crate::managed::canonical_rel(store.root(), &d) else {
+                bail!("dir 只认库内已存在的目录（收到 {d}）：磁盘上没有它——要按任务找卡就直接给 task，别靠猜目录名");
+            };
+            if !store.root().join(&canon).is_dir() {
+                bail!("dir 只认目录（收到 {d}）：这是文件，看单个文件用 paths");
+            }
+            d = canon;
+        }
         let mut lines: Vec<String> = cards
             .iter()
-            .filter(|c| parent_dir(&c.path) == d || c.path.starts_with(&format!("{d}/")))
+            .filter(|c| {
+                d.is_empty() || parent_dir(&c.path) == d || c.path.starts_with(&format!("{d}/"))
+            })
             .map(|c| c.render())
             .collect();
         lines.sort();
-        return Ok(json!({"mode": "dir", "dir": d, "count": lines.len(), "cards": lines}));
+        // 回显请求的目录而不是归一化后的空串：调用方要能对上自己问的是什么。
+        let echo = if d.is_empty() { "." } else { d.as_str() };
+        return Ok(json!({"mode": "dir", "dir": echo, "count": lines.len(), "cards": lines}));
     }
 
     // 无参：L0 目录树，只给形状不给内容。
@@ -305,7 +413,9 @@ fn map(store: &Store, args: &Value) -> Result<Value> {
             "managed": cov.managed,
             "uncarded": cov.uncarded,
             "uncarded_sample": cov.sample,
-            "next": "先 dk_sweep 取批补卡；确认这些与本次任务无关，可传 allow_partial:true",
+            // 只读出路放第一句：这是跨库最常撞到的态（别人家的索引总是「在开发中」），
+            // 而原来这句只有「先 dk_sweep 补卡」——照着做就是把卡写进别人的仓库。
+            "next": "只是要看源码：加 --allow-partial（MCP 传 allow_partial:true）只读拿走结果。补卡是这个仓库自己的人的事：要补就在本仓库补，别在别人仓库里补",
         }));
     }
 
@@ -518,7 +628,7 @@ fn freshness(store: &Store, c: &Card) -> &'static str {
 fn get(store: &Store, args: &Value) -> Result<Value> {
     if !store.is_initialized() {
         return Ok(
-            json!({"status": "uninitialized", "hint": "此仓库还没有 dk 索引，请人执行 dk init"}),
+            json!({"status": "uninitialized", "hint": NO_INDEX_HINT}),
         );
     }
     let want = arg_strs(args, "paths")?;
@@ -529,11 +639,14 @@ fn get(store: &Store, args: &Value) -> Result<Value> {
     let idx = Index::build(&cards);
     let mut out = Vec::new();
     for w in want {
-        let w = w.replace('\\', "/");
+        let w = repo_file(store.root(), "paths", &w)?;
         match cards.iter().position(|c| c.path == w) {
-            None => out.push(
-                json!({"path": w, "state": "uncarded", "hint": "无卡。读源码后 dk_put 补一张"}),
-            ),
+            None => {
+                require_real_file(store.root(), "paths", &w)?;
+                out.push(
+                    json!({"path": w, "state": "uncarded", "hint": "无卡。读源码后 dk_put 补一张"}),
+                )
+            }
             Some(i) => {
                 let c = &cards[i];
                 let mut sib: Vec<Value> = idx
@@ -591,7 +704,7 @@ fn put(store: &Store, args: &Value) -> Result<Value> {
 fn sweep_tool(store: &Store, args: &Value) -> Result<Value> {
     if !store.is_initialized() {
         return Ok(
-            json!({"status": "uninitialized", "hint": "此仓库还没有 dk 索引，请人执行 dk init"}),
+            json!({"status": "uninitialized", "hint": NO_INDEX_HINT}),
         );
     }
     let limit = arg_usize(args, "limit", Limits::default().sweep_batch)?;
@@ -609,7 +722,7 @@ fn sweep_tool(store: &Store, args: &Value) -> Result<Value> {
 fn check_tool(store: &Store) -> Result<Value> {
     if !store.is_initialized() {
         return Ok(
-            json!({"status": "uninitialized", "hint": "此仓库还没有 dk 索引，请人执行 dk init"}),
+            json!({"status": "uninitialized", "hint": NO_INDEX_HINT}),
         );
     }
     let r = check::run(store)?;
@@ -642,6 +755,70 @@ mod tests {
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    /// 越界矩阵：这些写法要么是库外，要么会被当成别的文件。任何一条能穿过去，
+    /// 结果都是「成功地空着回去」——比报错更难被发现。
+    #[test]
+    fn repo_relative_rejects_everything_outside_the_repo() {
+        for bad in [
+            "..",
+            "../x",
+            "../..",
+            "a/../../b",
+            "crates/../..",
+            "src/../../other/a.rs",
+            "/etc/passwd",
+            "//server/share/x",
+            "\\\\server\\share\\x",
+            "C:/Windows/x",
+            "D:",
+            "c:",
+            "https://example.com/a.rs",
+            "file:///d/x",
+            "..//",
+        ] {
+            let got = repo_relative("paths", bad);
+            assert!(got.is_err(), "{bad} 应被拒，实际 {got:?}");
+            let msg = got.unwrap_err().to_string();
+            assert!(
+                msg.contains("只认本仓库相对路径"),
+                "{bad} 的报错要说清边界：{msg}"
+            );
+        }
+        // 库内写法必须放行，且归一掉 ./ 与重复的 /
+        for (raw, want) in [
+            ("src/a.rs", "src/a.rs"),
+            ("./src/a.rs", "src/a.rs"),
+            ("src//a.rs", "src//a.rs"),
+            ("src\\a.rs", "src/a.rs"),
+            ("src/a.rs/", "src/a.rs"),
+            (".", ""),
+        ] {
+            assert_eq!(repo_relative("paths", raw).unwrap(), want, "raw={raw}");
+        }
+    }
+
+    /// 文件路径比目录路径多三条：不许 "."、不许带行号、存在就按磁盘正名。
+    #[test]
+    fn repo_file_normalizes_and_refuses_sloppy_input() {
+        let root = tmp("serve_repo_file");
+        fs::write(root.join("Alpha.rs"), "x\n").unwrap();
+        // Windows 上大小写不敏感：同一份文件必须归一到磁盘上的名字。
+        let got = repo_file(&root, "paths", "alpha.rs");
+        if cfg!(windows) {
+            assert_eq!(got.unwrap(), "Alpha.rs");
+        }
+        assert!(repo_file(&root, "paths", ".")
+            .unwrap_err()
+            .to_string()
+            .contains("不是整个仓库"));
+        assert!(repo_file(&root, "paths", "Alpha.rs:12")
+            .unwrap_err()
+            .to_string()
+            .contains("不要带行号"));
+        // 库外文件不因不存在就静默放过：越界判定在 repo_relative 里先发生
+        assert!(repo_file(&root, "paths", "../outside.rs").is_err());
     }
 
     #[test]

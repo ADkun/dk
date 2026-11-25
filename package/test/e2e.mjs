@@ -6,7 +6,8 @@
  * 前置：cargo build（debug 即可）。二进制可用环境变量 DK_BIN 指定。
  * 运行：node package/test/e2e.mjs（它是端到端脚本，不是 *.test.mjs，node --test 不会自动收它）
  */
-import { mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -27,6 +28,43 @@ function pickBinary() {
 const BIN = pickBinary()
 // 临时仓库放在 target/ 下（已被 .gitignore 排除）：系统临时目录在部分沙箱里不可写。
 const TEMP = join(SELF, 'target', 'e2e-tmp')
+
+/**
+ * 三处工具声明（serve 的 arg_keys、mcp.rs 的 tool_specs、package/index.js 的 SPECS）必须同步，
+ * 而过去「同步」只有人眼守着：实测 dk_map 两侧描述差了 38 个字，谁也没发现。这里直接对拍
+ * 两份运行时字符串——壳里的描述就是模型读到的那段话，它漂了没人会知道。
+ */
+function mcpToolDescriptions() {
+  return new Promise((resolve, reject) => {
+    const child = spawn(BIN, ['mcp'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+    const timer = setTimeout(() => { child.kill(); reject(new Error('dk mcp 无响应')) }, 15000)
+    let buf = ''
+    child.stdout.setEncoding('utf8')
+    child.stdout.on('data', chunk => {
+      buf += chunk
+      let at
+      while ((at = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, at).trim()
+        buf = buf.slice(at + 1)
+        if (!line) continue
+        let msg
+        try { msg = JSON.parse(line) } catch { continue }
+        if (Array.isArray(msg.result?.tools)) {
+          clearTimeout(timer)
+          child.kill()
+          resolve(new Map(msg.result.tools.map(t => [t.name, t.description || ''])))
+        }
+      }
+    })
+    child.on('error', error => { clearTimeout(timer); reject(error) })
+    const send = m => child.stdin.write(JSON.stringify(m) + '\n')
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'e2e', version: '0' } } })
+    setTimeout(() => {
+      send({ jsonrpc: '2.0', method: 'notifications/initialized' })
+      send({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
+    }, 200)
+  })
+}
 
 let pass = 0, fail = 0
 const ok = (label, cond, extra = '') => {
@@ -82,12 +120,42 @@ for (const [name, def] of tools) {
 ok('写工具声明为不并发安全', tools.get('dk_put').isConcurrencySafe() === false && tools.get('dk_init').isConcurrencySafe() === false)
 ok('读工具声明为并发安全', tools.get('dk_map').isConcurrencySafe() === true && tools.get('dk_check').isConcurrencySafe() === true)
 
+ok('dk_map 的描述点名「只覆盖当前仓库」', /只覆盖当前仓库/.test(tools.get('dk_map').description || ''))
+// 不带任务描述的 dk -C <目录> map 只回目录树：命令写对了参数没写，等于白跑一趟。
+ok('dk_map 的跨库命令带 <任务描述>', /dk -C <目录> map <任务描述>/.test(tools.get('dk_map').description || ''))
+
+console.log('== 三处声明不许漂：插件描述 vs dk mcp ==')
+const mcpDesc = await mcpToolDescriptions()
+const drift = EXPECT.filter(n => (tools.get(n)?.description || '') !== (mcpDesc.get(n) || ''))
+ok('六个工具的描述两侧逐字相同', drift.length === 0, drift.length ? '漂移：' + drift.join(',') : '6/6')
+
 console.log('== 系统提示词 ==')
 ok('只加一段', sections.length === 1, String(sections.length))
 ok('order = 11500', sections[0]?.order === 11500, String(sections[0]?.order))
 ok('不含 harness 工具名（read/write/edit/ask_user）',
   !/read|write|edit|ask_user/.test(sections[0]?.text.replace(/dk_\w+/g, '') || 'x'))
 ok('文案里点名 dk_map / dk_put', /dk_map/.test(sections[0]?.text || '') && /dk_put/.test(sections[0]?.text || ''))
+ok('文案末尾带跨库读法（dk -C 只读、不切过去写卡）',
+  /dk -C <目录> map/.test(sections[0]?.text || '') && /不要切过去写卡/.test(sections[0]?.text || ''))
+ok('提示词里的跨库命令也带 <任务描述>', /map <任务描述>/.test(sections[0]?.text || ''))
+// PATH 上的 dk 可能比插件实跑的旧（本机实测 PATH 上是 0.2.7）：照抄提示里的命令会落到旧语义，
+// 而旧的 next 还在教「先 dk_sweep 补卡」——命令成功退出，看不出问题（审查 P2-1）。
+const promptText = sections[0]?.text || ''
+ok('提示词点名实跑的二进制（不是 PATH 上的旧 dk）', promptText.includes(BIN.replace(/\\/g, '/')), promptText.slice(-70))
+// 反斜杠路径粘进 Git Bash 会被吃成转义（实测 exit 127）：提示里出现的必须是能直接粘的形态。
+ok('提示里的二进制路径用正斜杠（bash / pwsh 都能直接粘）', !/[A-Za-z]:\\/.test(promptText), promptText.slice(-70))
+ok('提示词不用输出里不存在的状态字符串（判别字段是 incomplete）', promptText.includes('incomplete') && !promptText.includes('索引不全'), promptText.slice(-140))
+
+console.log('== 第三层：/dk SKILL（按需载入，命令必须与提示词同形）==')
+// 三层里只有 SKILL 是「用户明确要治理」时才到的位置，它写错等于强提醒写错。
+const skill = readFileSync(join(SELF, 'skills', 'dk', 'SKILL.md'), 'utf8')
+ok('SKILL 带同一条跨库读法', /dk -C <目录> map <任务描述>/.test(skill) && /不要切过去写卡/.test(skill))
+ok('SKILL 里建库前先问人（别在别人的仓库里 dk_init）', /先问用户要不要/.test(skill))
+// A5 管的是所有会进上下文的文案，不只是提示词：六条工具描述同样每次都在。
+const a5 = (s) => !/read|write|edit|ask_user/.test(String(s).replace(/dk_\w+/g, ''))
+ok('A5：六条工具描述都不含 harness 工具名', EXPECT.every(n => a5(tools.get(n).description || '')),
+  'dk:' + EXPECT.filter(n => !a5(tools.get(n).description || '')).join(','))
+ok('A5：SKILL 也不含 harness 工具名（扣掉 dk_* 后）', a5(skill))
 
 const exec = { agent: {}, signal: undefined }
 
@@ -96,9 +164,13 @@ const check = await tools.get('dk_check').execute({}, exec)
 ok('dk_check 返回对象', typeof check === 'object' && check !== null, JSON.stringify(check).slice(0, 120))
 
 const map = await tools.get('dk_map').execute({ task: '检索怎么算相关度' }, exec)
-ok('dk_map 有命中', Array.isArray(map.cards) || Array.isArray(map.dirs) || map.status, JSON.stringify(map).slice(0, 200))
+// 原来是 `Array.isArray(cards) || Array.isArray(dirs) || status`——任何不抛错的返回都为真，
+// 连 status:"uninitialized" 都算通过，于是「命中并给出卡片行」这句话其实从没被测过。
+ok('dk_map 有命中（真出卡片，不是只回一个状态）', Array.isArray(map.cards) && map.cards.length > 0, JSON.stringify(map).slice(0, 200))
 const rendered = tools.get('dk_map').output.render({}, map)
-ok('output.render 产出 text', rendered.length === 1 && rendered[0].type === 'text' && rendered[0].text.includes('{'))
+ok('output.render 产出卡片行（带指纹与 F:）',
+  rendered.length === 1 && rendered[0].type === 'text' && /@[0-9a-f]{8}: F:/.test(rendered[0].text),
+  (rendered[0]?.text || '').slice(0, 80))
 
 const get = await tools.get('dk_get').execute({ paths: ['crates/dk-core/src/search.rs'] }, exec)
 const state = Array.isArray(get.cards) ? get.cards[0]?.state : get.state
@@ -117,6 +189,35 @@ ok('dir 带 level → 报错', /只属于任务检索/.test(await errOf({ dir: '
 ok('k:0 → 报错（否则命中被裁空，confidence 说假话）', /至少 1/.test(await errOf({ task: 'bm25', k: 0 })))
 // schema 写了 additionalProperties:false，实现就得真拒：拼错的 hint 被静默忽略，比报错难查得多。
 ok('拼错的参数 → 报错而不是静默忽略', /未知参数 hint/.test(await errOf({ task: 'bm25', hint: ['检索'] })))
+// 未知参数别只纠错：想够别的仓库的人最容易在这里撞墙（root / repo / cwd）。
+ok('未知参数 root 的报错给出路（要看别的仓库用 -C）',
+  /dk -C <目录> map <任务描述>/.test(await errOf({ task: 'bm25', root: '../x' })))
+
+console.log('== 库外路径不许「成功地空着回去」（审查 S3）==')
+// dir:"../别处" 原来回 count:0（像「这目录没卡」），paths:["../别处/a.rs"] 原来回
+// state:"uncarded"（等于断言「这文件没建卡」）——都是假话，而 ../ 恰是想够别人仓库时的第一反应。
+const outOf = async (call) => {
+  try { return 'OK:' + JSON.stringify(await call()).slice(0, 100) } catch (e) { return String(e?.message || e) }
+}
+const mapTool = tools.get('dk_map'), getTool = tools.get('dk_get')
+ok('dir 越界（..）→ 报错', /只认本仓库相对路径/.test(await outOf(() => mapTool.execute({ dir: '../dsh-other' }, exec))))
+ok('dir 越界（绝对路径）→ 报错', /只认本仓库相对路径/.test(await outOf(() => mapTool.execute({ dir: 'D:/dsh' }, exec))))
+ok('paths 越界 → 报错', /只认本仓库相对路径/.test(await outOf(() => mapTool.execute({ paths: ['../other/a.rs'] }, exec))))
+ok('paths 绝对路径 → 报错', /只认本仓库相对路径/.test(await outOf(() => mapTool.execute({ paths: ['D:/dsh/a.rs'] }, exec))))
+// "." 表示整库，只对 dir 成立；当文件用就成了「对空路径断言这文件没建卡」。
+ok('paths:"." → 报错并指路 dir', /整库用 dir/.test(await outOf(() => mapTool.execute({ paths: ['.'] }, exec))))
+ok('dk_get "." → 报错并指路 dir', /整库用 dir/.test(await outOf(() => getTool.execute({ paths: ['.'] }, exec))))
+// 带行号是模型最常见的输入形态：报错要说「别带行号」，不能说成「库外路径」。
+ok('dk_get 带行号 → 报错点明行号，不谎称库外', /不要带行号/.test(await outOf(() => getTool.execute({ paths: ['SPEC.md:12'] }, exec))))
+ok('dk_get 越界 → 报错', /只认本仓库相对路径/.test(await outOf(() => getTool.execute({ paths: ['../other/a.rs'] }, exec))))
+const whole = await mapTool.execute({ dir: '.' }, exec)
+ok('dir:"." 给整个仓库，不是「匹配不到」', Array.isArray(whole.cards) && whole.cards.length > 10, String(whole.cards?.length))
+// 「成功地空着回去」不止越界一种形态：目录、拼错的文件名、不存在的 dir 同样是假话
+// （审查 P1-2 / P2-2：get crates 回 state:"uncarded"＝对目录断言「这文件没建卡」）。
+ok('dk_get 收目录 → 报错并指路 dir', /这是目录/.test(await outOf(() => getTool.execute({ paths: ['crates'] }, exec))))
+ok('dk_map 的 paths 收目录 → 报错', /这是目录/.test(await outOf(() => mapTool.execute({ paths: ['crates'] }, exec))))
+ok('拼错的文件名 → 报错，不谎称未建卡', /磁盘上没有它/.test(await outOf(() => getTool.execute({ paths: ['src/alhpa.rs'] }, exec))))
+ok('dir 收不存在的目录 → 报错，不回 count:0', /只认库内已存在的目录/.test(await outOf(() => mapTool.execute({ dir: 'nope' }, exec))))
 
 console.log('== 壳与核心的约定：CLI 也要能用（v0.3.2 的 F1）==')
 // e2e 原先只走 serve 路径，于是互斥守卫把 CLI 唯一的入口用法（无参给目录树）打死时，
@@ -135,6 +236,28 @@ ok('裸 dk map 出目录树（clap 默认值不许转发成"给了 level"）',
 const noTaskLevel = cli(['map', '-C', SELF, '--level', 'l0'])
 ok('没有 task 却给 --level l0 → 报错，不静默忽略', /只属于任务检索/.test(noTaskLevel.err), noTaskLevel.err.trim().slice(0, 80))
 ok('空 paths → 报错（成功但空等于没问）', /paths 不能为空/.test(await errOf({ paths: [] })))
+// 没索引的目录最容易被照着 hint 在错的地方建出第二份 .dk/：hint 必须讲清 -C 指哪儿，
+// 并且不许直接叫人 dk init（要不要建由那个仓库的人决定）。
+const sub = cli(['map', '-C', join(SELF, 'crates')])
+ok('没索引的目录：hint 讲清 -C 要指仓库根，不复读「执行 dk init」',
+  /-C 要指向仓库根/.test(sub.out) && !/执行 dk init/.test(sub.out),
+  (sub.out.match(/"hint": "[^"]{0,40}/) || [sub.err.trim().slice(0, 60)])[0])
+
+// 同一个事实不能两个壳两套答案：dk_map 会说「这里没有索引」，而 dk check / dk sweep
+// 原来在同一个目录回「受管 0 文件 / 覆盖率 100% | 一致」——最坏的一种假绿。
+const noIdxGet = cli(['get', '-C', join(SELF, 'crates'), 'SPEC.md'])
+const noIdxSweep = cli(['sweep', '-C', join(SELF, 'crates')])
+const noIdxCheck = cli(['check', '-C', join(SELF, 'crates')])
+ok('没索引：get 也给同一句 hint', /-C 要指向仓库根/.test(noIdxGet.out), noIdxGet.err.trim().slice(0, 60))
+ok('没索引：sweep 不许回「还差 0」', /-C 要指向仓库根/.test(noIdxSweep.err) && !/还差 0/.test(noIdxSweep.out), (noIdxSweep.out + noIdxSweep.err).trim().slice(0, 60))
+ok('没索引：check 不许回「一致」', /-C 要指向仓库根/.test(noIdxCheck.err) && !/覆盖率/.test(noIdxCheck.out), (noIdxCheck.out + noIdxCheck.err).trim().slice(0, 60))
+
+// 目录不存在 ≠ 没有索引：两句提示对应两种下一步（改 -C 还是去问那个仓库的人）。
+const noDir = cli(['check', '-C', join(SELF, 'no-such-dir')])
+const noDirMap = cli(['map', '-C', join(SELF, 'no-such-dir'), 'x'])
+ok('目录不存在：check 与 map 同答「工作目录不存在」',
+  /工作目录不存在/.test(noDir.err) && /工作目录不存在/.test(noDirMap.err),
+  (noDir.err || noDir.out).trim().slice(0, 60))
 
 console.log('== 第二个 root：写链路（临时目录）==')
 rmSync(TEMP, { recursive: true, force: true })
@@ -165,6 +288,18 @@ ok('dk_put 写一张卡', Array.isArray(one.added) && one.added.length === 1, JS
 
 const half = await toolsB.get('dk_map').execute({ task: 'alpha 常量' }, execB)
 ok('覆盖率 1/2 时拒绝给检索结果（§3 不完整即拒绝）', half.status === 'incomplete' && half.uncarded === 1, JSON.stringify(half).slice(0, 180))
+
+// incomplete 是跨库最常见的态（别人的索引很少刚好 100%）。这一行的出路必须第一句
+// 就是「只读」，并且命令要能照着敲：原来写的是 MCP 形状的 allow_partial:true，CLI 照抄跑不通。
+ok('incomplete 的 next 先给只读出路，不推人去补别人的卡',
+  /--allow-partial/.test(half.next || '') && /别在别人仓库里补/.test(half.next || ''),
+  String(half.next || '').slice(0, 120))
+const cliIncomplete = cli(['map', '-C', TEMP, 'alpha 常量'])
+ok('CLI 照 next 敲真能过（--allow-partial 就在文案里）',
+  /--allow-partial/.test(cliIncomplete.out) && /incomplete/.test(cliIncomplete.out),
+  (cliIncomplete.out + cliIncomplete.err).trim().slice(0, 100))
+const cliPartial = cli(['map', '-C', TEMP, 'alpha 常量', '--allow-partial'])
+ok('加上 --allow-partial 立刻出卡（不是只换一句话）', /@[0-9a-f]{8}:/.test(cliPartial.out), cliPartial.err.trim().slice(0, 80))
 
 const partial = await toolsB.get('dk_map').execute({ task: 'alpha 常量', allow_partial: true }, execB)
 ok('allow_partial 放行时带 coverage 与 partial 声明', Array.isArray(partial.cards) && typeof partial.partial === 'string' && partial.partial.includes('src/beta.rs'), JSON.stringify(partial).slice(0, 180))

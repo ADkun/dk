@@ -105,6 +105,20 @@ pub fn verify(root: &Path, rules: &Rules, raw: &str) -> Verdict {
     Verdict::Managed { rel: real }
 }
 
+/// 按磁盘正名取仓库相对路径（Windows 大小写、符号链接都纠正过来）；不在库内或不存在给 None。
+/// 读路径的工具（dk_get / dk_map 的 paths）必须先过这一步：字符串比较会把
+/// `src/Alpha.rs` 判成另一个文件，于是对存在的文件断言「这文件没建卡」。
+pub fn canonical_rel(root: &Path, rel: &str) -> Option<String> {
+    let cr = fs::canonicalize(root).ok()?;
+    let c = fs::canonicalize(root.join(rel)).ok()?;
+    let real = c.strip_prefix(&cr).ok()?.to_string_lossy().replace('\\', "/");
+    if real.is_empty() {
+        None
+    } else {
+        Some(real)
+    }
+}
+
 /// R 里 `code:` 目标的在库判定（SPEC §8 硬门）。不要求受管，只要求真实存在且在仓库内。
 pub fn exists_in_repo(root: &Path, raw: &str) -> bool {
     let rel = normalize(raw);

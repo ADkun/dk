@@ -302,6 +302,20 @@ impl Store {
                         .push(format!("{path}（R 指向不存在：{}）", bad.join(", ")));
                     continue;
                 }
+                // code: 有硬门，其余前缀与裸文本只当自由文本——于是「跨库文件」写成裸路径也照样
+                // 写进去：不校验、连不上邻居、永远不新鲜，看起来记下来了其实什么都没记。
+                for item in r.split(',').map(str::trim) {
+                    // 「不带命名空间」不能拿「含 :」判：Windows 盘符（D:/other/x.rs）与 URL 都带 :，
+                    // 而前者恰恰是最常见的跨库写法，被这条判成有命名空间就静默写进卡（审查 P2-1）。
+                    let namespaced =
+                        item.starts_with("code:") || item.starts_with("database://");
+                    let bare = !item.is_empty() && !namespaced && item.contains('/');
+                    if bare && !managed::exists_in_repo(self.root(), item) {
+                        report.warnings.push(format!(
+                            "{path}（R 里的 {item} 不是库内文件：不带 code: / database:// 前缀的项只当自由文本，不连邻居也不校验；跨库或远程的东西写进卡片正文才算记下来）"
+                        ));
+                    }
+                }
             }
             let Ok(bytes) = fs::read(self.root.join(&path)) else {
                 report.rejected.push(format!("{path}（读不到源码）"));
@@ -535,6 +549,60 @@ mod tests {
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(p.join("src")).unwrap();
         p
+    }
+
+    /// R 里写成库外路径时只给 warning、不拒收；但「库外」必须真被认出来——
+    /// Windows 盘符与 URL 都带 `:`，拿「含 :」判命名空间会把它们放过（审查 P2-1）。
+    #[test]
+    fn put_warns_on_outside_r_but_keeps_code_hard_gate() {
+        let root = tmp("store_r_outside");
+        fs::write(root.join("src/a.rs"), "fn a(){}\n").unwrap();
+        fs::write(root.join("src/b.rs"), "fn b(){}\n").unwrap();
+        let s = Store::open(&root).unwrap();
+        s.ensure_layout().unwrap();
+        let limits = Limits::default();
+        let put = |r: &str| {
+            s.put(
+                &[PutEntry {
+                    path: "src/a.rs".into(),
+                    f: Some("甲".into()),
+                    r: Some(r.into()),
+                    a: None,
+                    s: None,
+                    tags: None,
+                    skip: false,
+                }],
+                &limits,
+                PutOpts { drop_bad: false },
+            )
+            .unwrap()
+        };
+
+        // 库内：不吵
+        let rep = put("code:src/b.rs");
+        assert!(rep.warnings.is_empty(), "{:?}", rep.warnings);
+        assert!(rep.rejected.is_empty());
+
+        // 库外裸路径（含 Windows 盘符 / URL / 相对爬升）：告警但写进去
+        for r in [
+            "../other/a.rs",
+            "D:/other/repo/x.rs",
+            "https://github.com/x/y.rs",
+            "/etc/passwd",
+        ] {
+            let rep = put(r);
+            assert!(
+                rep.warnings.iter().any(|w| w.contains("不是库内文件")),
+                "{r} 应给 warning，实际 {:?}",
+                rep.warnings
+            );
+            assert!(rep.rejected.is_empty(), "{r} 不该被拒收");
+        }
+
+        // code: 仍是硬门：整条拒收，不写半张卡
+        let rep = put("code:D:/other/x.rs");
+        assert!(rep.warnings.is_empty());
+        assert!(rep.rejected.iter().any(|e| e.contains("R 指向不存在")));
     }
 
     #[test]

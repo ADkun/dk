@@ -1,7 +1,7 @@
 /**
  * dsh-dk — 把 dk 代码索引接进 DSH（SPEC §9.3）。
  *
- * 只做三件事：内置拉起 dk serve、把六个工具注册成原生名、追加一句系统提示词。
+ * 只做三件事：内置拉起 dk serve、把六个工具注册成原生名、追加一段系统提示词。
  * 不注册任何钩子，没有业务逻辑，只有转发——所有行为都来自 dk serve 的 NDJSON。
  *
  * 零 @deepseek-ai 运行时依赖：Config 的 schemastery 描述符按需探测，解析不到只是
@@ -26,6 +26,22 @@ const GUIDANCE =
   + '改完用 dk_put 把改过的文件写回（F、R 必写，A、S 没有就省）；'
   + '卡片与源码对不上（stale）就先重读源码再重写。'
   + '没有索引时不要擅自建，先问用户。'
+  + '要看本仓库之外的代码：那个目录有 .dk 就用 dk -C <目录> map <任务描述> 只读查看，不要切过去写卡；没有就照常搜。'
+  + '它回的状态是 incomplete 而不是卡片时：加 --allow-partial 只读拿走结果，别去补卡——补卡是那个仓库的人的事。'
+
+/**
+ * 提示里写的 `dk` 与插件实跑的可能不是同一个：PATH 上常是旧版本（本机实测 PATH 上是 0.2.7，
+ * 而插件用的是 target/release 的 0.3.x）。照抄那句命令会拿到旧语义——旧的 `next` 还在教
+ * 「先 dk_sweep 补卡」，正是这段话要治的病，而且它成功退出，看不出问题（审查 P2-1）。
+ * 探测到绝对路径就把这个二进制写进提示；是裸名就不添话，免得凭空多一句。
+ */
+function guidanceFor(binary) {
+  const bin = typeof binary === 'string' ? binary : ''
+  if (!bin || bin === DEFAULTS.binary) return GUIDANCE
+  // 路径要写正斜杠：反斜杠那串粘进 Git Bash 会被吃成转义（实测 exit 127），人只会以为「路径写错了」，
+  // 然后退回 PATH 上的旧 dk——恰好落回这段话要治的病。正斜杠在 cmd / pwsh / bash 三处都成立。
+  return GUIDANCE + '（上面说的 dk 就是这个二进制：' + bin.replace(/\\/g, '/') + '；PATH 上的 dk 可能是旧版本）'
+}
 
 // --- Config -----------------------------------------------------------------
 
@@ -277,7 +293,9 @@ const SPECS = [
     name: 'dk_map',
     concurrency: true,
     description: '查代码索引：给 task 拿最相关的几张卡片（每张含 职责/关系/契约/约束），也可给 paths 或 dir 直接取；'
-      + '不给参数时给目录树。索引没建完时默认拒绝给残缺结果。'
+      + '不给参数时给目录树。索引没建完时默认拒绝给残缺结果，只回一份 incomplete 清单——真想读就传 allow_partial:true 拿走结果，不要替那个仓库补卡；'
+      + '只覆盖当前仓库：paths / dir 只认库内相对路径，库外一律报错；'
+      + '要看别的仓库的源码，用 dk -C <目录> map <任务描述> 只读查看（它回 incomplete 就加 --allow-partial），不要切过去写卡。'
       + 'confidence 只说词面是怎么对上的（surface/fallback/none），不是「答案在里面」；'
       + 'matched 里 hit 是首张卡踩中的查询词、of 是分母（只数本仓出现过、且不是过半卡片都有的词），absent 是本仓一张卡都没有的词——'
       + 'hit 少而 absent 多说明该换词或给 paths，不是问法不好。of=0 时 hit 必为空（分母里没有有判别力的词），看 weak_n/absent_n 才知道是哪一类。'
@@ -391,6 +409,7 @@ async function resolveRoot(exec, cfg, ctx) {
 
 export function apply(ctx, config) {
   const cfg = resolveConfig(config)
+  // 实跑的二进制同时喂给工具与提示：两边各探一次，就有了「提示说 A、调用跑 B」的可能。
   const server = new Server(resolveBinary(cfg.binary), cfg.callTimeoutMs)
 
   ctx.effect(() => () => server.stop(), 'dsh-dk: stop dk serve')
@@ -428,7 +447,7 @@ export function apply(ctx, config) {
           const prompt = childCtx.systemPrompt
           if (!prompt || typeof prompt.section !== 'function') return
           // 注册挂在 childCtx 上，随 fiber 一起拆；这里不再单独拆 section。
-          prompt.section({ name: 'dk:index', order: 11500, text: GUIDANCE })
+          prompt.section({ name: 'dk:index', order: 11500, text: guidanceFor(server.binary) })
         })
       } catch { /* 没有注入能力时，工具照样可用，只是少一句提示 */ }
       return () => { try { if (fiber && typeof fiber.dispose === 'function') fiber.dispose() } catch { /* 已拆 */ } }

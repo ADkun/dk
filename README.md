@@ -106,7 +106,7 @@ init    sweep   check   get   put   map   tokens   serve   mcp
 
 ## 装到 DSH
 
-`package/` 是 DSH 插件壳，只做三件事：内置拉起 `dk serve`、把工具注册成原生名、追加一句系统提示词。
+`package/` 是 DSH 插件壳，只做三件事：内置拉起 `dk serve`、把工具注册成原生名、追加一段系统提示词。
 
 ```bash
 cargo build --release
@@ -128,7 +128,7 @@ cargo build --release
 1. **覆盖要么 100%，要么明说没建完**。`dk_map` 的**任务检索**在还差 N 个文件时拒绝返回结果
    （`allow_partial:true` 才给，且结果头部永久标出缺哪些）。目录树 / 按路径 / 按目录这三种形状
    查询只回答「索引里有什么」，不拦也不排序。部分索引比没有索引更危险：它让人以为查过了。
-2. **不做流程强制**。AGENTS.md 一块、系统提示词一句、`/dk` 技能一个——就这三层软提醒。
+2. **不做流程强制**。AGENTS.md 一块、系统提示词一段、`/dk` 技能一个——就这三层软提醒。
    dk 不看你的工具调用、不监听文件系统、不挂压缩钩子。钩子要穷举 OS × harness × 文件语义 ×
    读次数 × 压缩五个维度，不可穷举即不可信，而不可信的治理工具比没有更糟。
 3. **索引是可删的**。删掉 `.dk/` 只会让你回到「没有索引」，不会留下不一致的半成品。
@@ -161,7 +161,7 @@ dk 不证明「治理发生过」，只让改错的机会变少。
 ```text
 crates/dk-core/   全部逻辑：卡片格式、存储、检索、体检、MCP 壳
 crates/dk/        CLI（只做参数与输出）
-package/          DSH 插件壳（原生工具名 + 内置拉起 + 一句提示词）
+package/          DSH 插件壳（原生工具名 + 内置拉起 + 一段提示词）
 skills/dk/        /dk 技能：发现模型跳过索引时，强制注入纪律
 SPEC.md           唯一权威规格：卡片格式、工具面、检索、硬门、三壳
 AGENTS.md         给改这个仓库的 agent 看的约定
@@ -178,7 +178,7 @@ cargo test                          # 单元测试
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 node --test package/test/prompt.test.mjs   # 插件壳单元测试（需先 cargo build）
-node package/test/e2e.mjs           # 插件壳端到端：fake ctx 跑真链路，27 条断言
+node package/test/e2e.mjs           # 插件壳端到端：fake ctx 跑真链路，70 条断言
 dk check                            # 本仓库索引是否一致（CI 最后一步就是它）
 ```
 

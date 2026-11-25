@@ -33,6 +33,19 @@ test('注册的 section 名、位次与正文', () => {
   assert.match(h.sections[0].text, /dk_put/)
 })
 
+test('末尾带跨库读法：dk -C 只读查看，且不切过去写卡', () => {
+  const h = harness()
+  const text = h.sections[0].text
+  // 命令必须带任务描述：不带只回目录树，模型跑一次拿不到卡片就会退回搜文件。
+  assert.match(text, /dk -C <目录> map <任务描述>/)
+  assert.match(text, /不要切过去写卡/)
+  // 别家索引不全是最常见的态：只在「读不到」时才说 `--allow-partial`，且必须先于「补卡」。
+  assert.match(text, /--allow-partial/)
+  assert.match(text, /别去补卡/)
+  // A5：只描述动作，不能出现任何 harness 工具名。
+  assert.ok(!/read|write|edit|ask_user/.test(text.replace(/dk_\w+/g, '')), text)
+})
+
 test('systemPrompt 晚到也照样注入（旧的一次性探测在这里会漏）', () => {
   const h = harness({ ready: 'later' })
   assert.equal(h.sections.length, 0, 'apply 那一刻服务还没就绪')
