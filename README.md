@@ -19,10 +19,78 @@ dk 的取舍只有一条：**一次改动的边际成本必须低于它省下的
 所以它只有六个工具、一份纯文本索引、一次写入；治理强度靠「卡写得准 + 随时可取 + 可机器验证」，
 不靠「证明治理发生过」。
 
-## 30 秒上手
+## 安装
+
+dk 本体是一个 CLI；接进 Harness 时，DSH 用插件，其它 Harness 用 MCP。三者背后是同一份逻辑，不需要分别配规则。
+
+| 你要做的 | 何时需要 |
+|---|---|
+| 装 CLI | 所有场景的第一步 |
+| 接入 DSH | 用 DSH，想让六个工具以原生名出现 |
+| 注册 MCP | 用其它支持 MCP 的 Harness |
+| `/dk` 技能 | 想要一层软提醒；DSH 需要单独放一份副本 |
+
+### 装 CLI
+
+从 Release 装（推荐）：到 [Releases](https://github.com/ADkun/dk/releases) 下载形如 `dk-v<版本>-<target>.zip` 的包（tag 带 `v`，例如 `v0.3.6`），按系统/架构挑好后解压，把 `dk` / `dk.exe` 放进 `PATH` 里的任一目录，验证：
 
 ```bash
-cargo install --path crates/dk --locked    # 装出 dk 到 ~/.cargo/bin；不想装就把下面的 dk 换成 ./target/release/dk
+dk --version
+```
+
+从源码装：需要 Rust 1.88+（rustup 会把 `~/.cargo/bin` 放进 `PATH`）：
+
+```bash
+git clone https://github.com/ADkun/dk.git
+cd dk
+cargo install --path crates/dk --locked
+dk --version
+```
+
+只想临时试跑、不写进 `PATH`：`cargo build --release --locked`，二进制在 `target/release/dk`（Windows 是 `dk.exe`）。
+
+### 接入 DSH
+
+插件只做三件事：内置拉起 `dk serve`、注册原生工具名、追加一段系统提示词。先按上面装好 CLI，二进制查找顺序见下，再改 profile：
+
+```text
+~/.dsh/profiles/<profile>/package.json
+  dependencies:        "dsh-dk": "link:<本仓库绝对路径>/package"
+  dsh.profile.bundles: 追加 "dsh-dk"
+```
+
+Windows 路径写 `/` 或 JSON 里转义后的双反斜杠，别用单个裸反斜杠。然后在 profile 目录 `pnpm install`，重启 DSH。
+
+两个默认值让换机器也能跑：`binary` 留空先找本仓库的 `target/{release,debug}/dk`，再走 `PATH`；`root` 留空会从会话目录向上找 `.dk/`（其次 `.git/`），`cd` 进子目录也不会分裂索引。全部配置项见 [package/README.md](package/README.md)。
+
+再放一份技能副本，DSH 里的 `/dk` 才会生效：把仓库的 `skills/dk/SKILL.md` 复制到 `~/.dsh/skills/dk/SKILL.md`。必须是**复制，不是链接**；改了仓库那份之后要重新同步，否则线上那份会静默落后。
+
+### 接入其它 Harness（MCP）
+
+不用插件：把 `dk mcp` 注册成一个 stdio MCP server 即可，工具名见下面的「六个工具」，参数由 MCP `tools/list` 给出。各 Harness 的配置字段名不同，按它的格式翻译这一组值：
+
+```json
+{
+  "mcpServers": {
+    "dk": {
+      "command": "dk",
+      "args": ["-C", "<仓库根目录的绝对路径>", "mcp"]
+    }
+  }
+}
+```
+
+- `command` 写 `dk.exe` 或二进制绝对路径也行，只要 Harness 能拉起它。
+- `-C` 是全局选项，固定仓库根；只有当 Harness 保证以仓库根作为工作目录启动 server 时才能省略——dk 自己不上溯。
+- 进程由 Harness 按 MCP stdio 约定管理，不需要自己起服务。
+- 若 Harness 支持自定义技能，`skills/dk/SKILL.md` 是普通 Markdown，按它的技能目录约定放一份即可；这一步不影响 MCP。
+
+## 30 秒上手
+
+装好后（见 [安装](#安装)），在要索引的仓库根跑：
+
+```bash
+cd <你的仓库>
 dk init                                    # 建 .dk/ 与 .dkignore，并往 AGENTS.md 追加受管块
 dk sweep                                   # 看还差哪些文件没建卡（只列路径与机器特征，不读源码）
 echo '{"entries":[{"path":"AGENTS.md","F":"项目约定与 dk 受管块"}]}' | dk put   # 写卡；省略文件读 stdin
@@ -71,7 +139,7 @@ dk check                                   # 全量体检；不干净时 exit 1�
 | `dk_put` | 写卡：`{entries:[{path,F,R,A,S}]}`，哈希由工具现算 | 改完立刻写回 |
 | `dk_check` | 全量体检：覆盖率、过期、失联、坏行、坏 R | 收工前 / CI 里 |
 
-一次真实调用（本仓库 29 个文件，这里节选两条，卡片正文有截断）：
+一次真实调用（本仓库几十个文件，这里节选两条，卡片正文有截断）：
 
 ```text
 $ dk map "插件壳怎么装到 profile"
@@ -80,7 +148,7 @@ Cargo.toml@dfde79f8: F:工作区：两个 crate 与统一 release 档 | R:crates
 （首张卡命中 1/3 个有判别力的查询词：profile）
 ```
 
-这两条完整卡合计约 1 k token（3.0 B/token 的估法），替掉的是「把 29 个文件挨个打开，
+这两条完整卡合计约 1 k token（3.0 B/token 的估法），替掉的是「把每个文件挨个打开，
 判断哪个与这次改动相关」。`@` 后是源码指纹，每次 `dk_put` 都会变——分不清真假时用 `dk check` 现算。
 
 最后那行是**这次问法有多虚**的凭据：七个词里只有三个有判别力（本仓到处都有的词不进分母），
@@ -104,34 +172,14 @@ init    sweep   check   get   put   map   tokens   serve   mcp
 - `tokens`：统计卡片体量与 token 估算（判断索引是否已经贵到该拆）
 - `-C <dir>`：指定仓库根，默认当前目录。`dk` 自己不上溯——上溯是壳的职责（见 [package/README.md](package/README.md)）
 
-## 装到 DSH
-
-`package/` 是 DSH 插件壳，只做三件事：内置拉起 `dk serve`、把工具注册成原生名、追加一段系统提示词。
-
-```bash
-cargo build --release
-# ~/.dsh/profiles/<profile>/package.json：
-#   dependencies:        "dsh-dk": "link:<本仓库绝对路径>/package"
-#   dsh.profile.bundles: 追加 "dsh-dk"
-# 然后在该 profile 目录 pnpm install，重启 DSH
-```
-
-两个默认值是为了「换台机器也能跑」：`binary` 留空会先找本仓库的 `target/{release,debug}/dk`，
-再走 `PATH`；`root` 留空会从会话目录向上找 `.dk/`（其次 `.git/`），所以 `cd` 进子目录也不会分裂索引。
-细节与配置项见 [package/README.md](package/README.md)。
-
-其它 harness：把 `dk mcp` 注册成 MCP server 即可，工具名与参数完全一致。
-非 DSH、非 MCP 的场合用 `dk serve` 的 NDJSON。
-
 ## 三条硬边界
 
 1. **覆盖要么 100%，要么明说没建完**。`dk_map` 的**任务检索**在还差 N 个文件时拒绝返回结果
    （`allow_partial:true` 才给，且结果头部永久标出缺哪些）。目录树 / 按路径 / 按目录这三种形状
    查询只回答「索引里有什么」，不拦也不排序。部分索引比没有索引更危险：它让人以为查过了。
 2. **不做流程强制**。AGENTS.md 一块、系统提示词一段、`/dk` 技能一个——就这三层软提醒。
-   第三层的源是 `skills/dk/SKILL.md`，而 DSH 只认装到 `~/.dsh/skills/dk/` 的那份**副本**（复制，不是链接）：
-   改了仓库这一份而没同步过去，线上那份会静默落后一整轮（本机就这么落后过一次）。
-   dk 不看你的工具调用、不监听文件系统、不挂压缩钩子。钩子要穷举 OS × harness × 文件语义 ×
+   技能副本怎么放、为什么要复制而不是链接，见「安装 / 接入 DSH」；dk 不看你的工具调用、
+   不监听文件系统、不挂压缩钩子。钩子要穷举 OS × harness × 文件语义 ×
    读次数 × 压缩五个维度，不可穷举即不可信，而不可信的治理工具比没有更糟。
 3. **索引是可删的**。删掉 `.dk/` 只会让你回到「没有索引」，不会留下不一致的半成品。
 
