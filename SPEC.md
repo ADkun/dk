@@ -1,4 +1,4 @@
-# dk — 代码认知层（SPEC v0.3.5）
+# dk — 代码认知层（SPEC v0.3.6）
 
 > 一行一张卡，一次写入一次收获。**任意体量的项目，AOCI 级治理能力，零重建成本。**
 > Rust · 不依赖 git · 不依赖 harness · 单文件分发
@@ -413,7 +413,9 @@ AGENTS.md 受管块内容（不得出现 harness 工具名，见 A5）：
 ```
 dk/
   Cargo.toml                 # workspace
-  SPEC.md                    # 本文件
+  SPEC.md                    # 本文件：协议与判据的唯一权威
+  MAINTAINING.md             # 维护手册：改动同步清单、CI 与发版怎么操作（§9.6）
+  AGENTS.md                  # agent 入口：五条红线、八条验收命令、指路（§9.6）
   crates/
     dk-core/                 # 纯库：全部逻辑在这里
       src/lib.rs
@@ -435,9 +437,10 @@ dk/
     index.js                 # 拉起 dk serve + 注册六个工具 + 一段系统提示词
   scripts/                   # 发版用的小脚本（零依赖 node）
     version.mjs              # 三处版本号必须同号；--expect <tag> 给发版把关
-    release-notes.mjs        # Release 正文 ⇐ SPEC §12 的那一行
+    release-notes.mjs        # Release 正文 ⇐ SPEC §12 的那一行（按圈号切成条目）
+    check-maintain.mjs       # 维护一致性：版本同号 / 断言总数 / 文档预算 / 引用可查
   .github/workflows/
-    ci.yml                   # 门禁：版本号 → 三平台 fmt·clippy·test·build·e2e → 索引自检
+    ci.yml                   # 门禁：版本号与文档机检 → 三平台 fmt·clippy·test·build·e2e → 索引自检
     release.yml              # 打 tag 发版：四目标构建、打包、SHA256SUMS、gh release create
 ```
 
@@ -511,7 +514,7 @@ CLI 的 `dk get/map/put/sweep` 保留给人和脚本；模型侧一律走 `serve
 | 版本号 | `Cargo.toml` 的 `[workspace.package].version` | `node scripts/version.mjs`：三处（`Cargo.toml` / `package/package.json` / `SPEC.md` 标题）必须同号；CI 的第一道 job 就是它 |
 | 变更记录 | `SPEC.md` §12 里以该版本号开头的行（一个版本可能不止一行：v0.3.5 就分「功能」与「发布整理」） | `node scripts/release-notes.mjs <tag>`：正文逐字取自那些行的「变更」格，按文件顺序拼起来；一行都没有就报错退出 |
 | 触发 | `git push origin vX.Y.Z` | `.github/workflows/release.yml`：先 `version.mjs --expect <tag>` 拦「tag 与代码不同号」，再四目标构建、打包（二进制 + LICENSE + README）、算 `SHA256SUMS`，最后 `gh release create` |
-| 门禁 | 推 main 即跑 | `.github/workflows/ci.yml`：版本号同号 → 三平台 fmt·clippy·test·build·e2e → `dk check` 收尾 |
+| 门禁 | 推 main 即跑 | `.github/workflows/ci.yml`：版本号同号与文档机检 → 三平台 fmt·clippy·test·build·e2e → `dk check` 收尾 |
 
 两条理由，都是踩出来的：
 
@@ -521,6 +524,19 @@ CLI 的 `dk get/map/put/sweep` 保留给人和脚本；模型侧一律走 `serve
 发版脚本自己也有失败路径（不存在的版本、不同号的 tag），CI 的 `meta` job 会各跑一次并断言它们退出非 0——「找不到就报错」这句话本身也得被测一次。
 
 **跑坏了不用挪 tag**：`gh workflow run release.yml -f tag=vX.Y.Z` 会用 main 上的流水线、把该 tag 的代码取下来跑（三个 job 的 `checkout` 都带 `ref: 该 tag`），对同一个 tag 重建资产。v0.3.5 首发就是这么救回来的：macOS 矩阵选了已下线的 `macos-13`/`macos-14`，arm64 挂在「configuration ... is not supported」、x64 一直 queued，而 tag 本身没有错。**别为了改流水线去删 tag 重推**——历史被人读到时，它已经指向过两棵不同的树。
+
+### 9.6 文档分四层，每层只有一个家
+
+缺的从来不是「文档写得少」，而是「改的时候没人告诉你要动哪几处」——`README.md` 的自测清单曾写着「73 条断言」，而那时 e2e 实际已经跑到 75 条：漂了一整版，没有任何一步会让它变红。
+
+| 层 | 家 | 回答 | 谁读 |
+|---|---|---|---|
+| 怎么用 | `README.md` | 装、上手、遇到问题怎么办 | 用 dk 的人 |
+| 协议与判据 | `SPEC.md`（本文件） | 卡片长什么样、工具怎么答、凭什么算过 | 改 dk 的人、复核者 |
+| 怎么改与怎么发 | `MAINTAINING.md` | 改了 X 必须同步哪几处、CI/发版怎么操作 | 维护者 |
+| agent 要守什么 | `AGENTS.md` | 五条红线、提交前八条命令 | agent（根入口） |
+
+规则只有一条：**同一句话只在一个地方存在，其它地方给指针。** 判据也要能被执行——版本三处同号、断言总数、文档预算（`AGENTS.md` ≤200 行、`MAINTAINING.md` ≤160 行）、引用可查、每个 `.md` 在文档地图里有一席之地，全部由 `scripts/check-maintain.mjs` 判、进 CI 的 `meta` job；判不了的（比如「一处事实一个家」）才留给评审。
 
 ---
 
@@ -610,7 +626,7 @@ MCP 壳（`dk mcp`）冒烟：喂 `initialize` / `notifications/initialized` / `
 
 DSH 插件壳用 fake-ctx 跑真链路（`package/test/e2e.mjs`，不启动 DSH，按插件契约伪造
 `ctx.tools.register` / `ctx.effect` / `ctx.get('workingDirectory')` / `ctx.get('systemPrompt')`），
-**73 条断言全过**（另有 12 条逐工具检查只计失败、不进 73 这个数）：
+**75 条断言全过**（另有 12 条逐工具检查只计失败、不进 75 这个数）：
 
 | 组 | 断言 |
 |---|---|
@@ -788,3 +804,4 @@ v0.3.1 交出去后再做一轮独立复核（子代理拿已装的二进制实�
 | 2026-11-25 | v0.3.4：v0.3.3 的第三轮对抗复核修七处（复核把「照抄引导必须拿到卡片」当判据，撞出的都是「文案说得对、跑起来另有说法」）——① `dk_map` 回 `incomplete` 时的 `next` 改成「先给只读出路」（含 `--allow-partial` 与「别在别人仓库里补」），原来是「先 `dk_sweep` 补卡」＋只写 MCP 形状的 `allow_partial:true`，CLI 照抄跑不通，等于把人推去补别人的卡；GUIDANCE（现七句 296 字）、`/dk` SKILL、`dk_map` 描述三处同步；② `dk check` / `dk sweep` 在无索引目录不再「成功地空着回去」（原来回「覆盖率 100% ｜ 一致」「还差 0」），与 `dk_map` 共用 `serve::NO_INDEX_HINT`；③ `paths`/`get` 新增 `repo_file`：按磁盘正名（`managed::canonical_rel`，与 `dk_put` 对齐）、`paths:"."` 报错并指路 `dir`、带行号报「不要带行号」（原来按「含 `:` 即绝对」判，把库内文件说成库外路径）；④ `repo_relative` 的绝对路径判定改成「`/` 开头、含 `://`、或 `盘符:`」，不再「含 `:` 即绝对」；⑤ R 告警判据从「不含 `:`」改成「含 `/` 且不是 `code:` / `database://`」，`D:/x` 与 `https://…` 从此也告警；⑥ e2e 的 `dk_map 有命中` 由恒真式（`\|\| map.status`，连 `uninitialized` 都算过）改为 `cards.length > 0`，并补 `paths` 绝对路径、`paths:"."`、带行号、A5 覆盖六条描述与 SKILL、CLI 三子命令同答、`incomplete` 照抄可跑七组断言（50 → 62 条）；⑦ 版本号对齐：`Cargo.toml` / `package/package.json` / 本文标题此前仍 0.3.2 | 复核给的是判据不是清单：它指出「命令照抄必须拿到卡片」只在别家索引 100% 时成立，而真实场景多半不全——**补丁的成败取决于最坏的那条支路**。同一条教训第二次出现：v0.3.2 是「CLI 无参被互斥守卫打死」，这次是「文案里的参数只有 MCP 形状」与「两个子命令绕过 `handle` 各说各话」，都是壳与核心、文档与实现只测了一端。 |
 | 2026-11-25 | v0.3.5：v0.3.4 的第四轮对抗复核修六处（复核把判据改成「照抄引导得到的必须是**同一个二进制**的语义」，并列出「成功地空着回去」的形态清单）——① `repo_file` 只做字符串归一，于是 `dk_get crates`、`dk_get package/`、拼错的 `src/alhpa.rs` 全回 `state:"uncarded"`＝**对目录断言「这文件没建卡」**（新增 `require_real_file`：正名失败报「磁盘上没有它」，正名成目录报「这是目录，看目录用 dir」）；② `dir:"nope"` 回 `count:0`，与①同类（现报「只认库内已存在的目录」）；③ `check`/`sweep` 对「目录不存在」说「先问这个仓库的人」，而 `map` 说「工作目录不存在」——两句话对应两种下一步，抽出 `serve::require_repo`（先 `is_dir` 再 `is_initialized`）；④ 提示里写的 `dk` 与插件实跑的二进制可能不是同一个（本机 `command -v dk` 是 0.2.7，插件跑 0.3.x；照抄那句命令拿到的 `next` 还是「先 dk_sweep 补卡」，正是这段话要治的病），GUIDANCE 改成 `guidanceFor(server.binary)`，探测到绝对路径就把二进制写进提示；⑤ SPEC §3 原写「不带命名空间的 R 项不校验、也不会连上邻居」是假话（库内裸路径仍按路径连邻居，实测 `src/alpha.rs` 出现在 R 邻居里），改成「不校验存在性 ≠ 不连邻居」；⑥ 「一句系统提示词」改成「一段」——复核先只找出三处（§8 结构树、`package/README.md` 配置表、`package.json` description），第五轮又补出两处（`package/index.js` 文件头、`package/cordis.patch.yml` 注释）。⑦ 第五轮复核（agent-5/6）修四处「文案与实跑不一致」：提示里的二进制路径改**正斜杠**（反斜杠那串粘进 Git Bash 是 exit 127，人只会以为路径写错了、退回 PATH 上的旧 `dk`，恰好落回这段提示要治的病）；GUIDANCE 引号里的「索引不全」改成真状态名 `incomplete`（输出里没有那四个字）；§9.3 同一句也改；§9.3 的「441 行」改成实测行数（456）。断言 62 → 70（新增：`get`/`paths` 收目录、拼错的文件名、不存在的 `dir`、提示词点名实跑二进制、目录不存在时两壳同答、提示里的路径用正斜杠、提示词不引用实跑里没有的状态字符串）。⑧ 终检（只读，agent-7）又抓出两处：§9.3 的拆分数字跟着总数一起漂了（原写「约 190 行 schema / 265 行手写」，实测 `package/index.js:278-384` 是 107 行、手写 349 行——190 是 v0.2.2「335 行」时代的数，改总数时没跟着改，265 又是按 190 反算的，于是两个数一起错）；`Cargo.toml` 与 `crates/dk-core/Cargo.toml` 还声明着 rayon 而源码零使用、§9.1 却写「不引 rayon」，删掉这个依赖（`check.rs` 用的是 `std::thread::scope`，本来就够）。顺带给 `dir:"nope"` 的报错补了出路（同类报错都有下一步，它原来只有「磁盘上没有它」）。**保留** GUIDANCE 第七句：复核建议删掉它（与 `incomplete.next` 重复），但常驻那句管的是模型**没机会看到 `next`** 的场合（索引刚好 100% 时它也在），删了等于把约束绑在「一定会走到 incomplete」上。 | 教训：假话的形态要**列清单再一条条测**——「越界」只是一种，目录、拼错的名字、不存在的目录同样会「成功地空着回去」；而「引导里的命令照抄能跑」还缺一个前提：**在哪一个二进制上照抄**。 |
 | 2026-11-25 | **v0.3.5 发布整理：CI 从「红着没人管」修回绿，并补上 tag 触发的发版流水线**——① v0.3.5 那两个提交上 `cargo fmt --check` 与 `clippy -D warnings` 本来就是红的（最近两次 CI 都在 27 秒内挂在 fmt：`crates/dk/src/main.rs` 的 let-else、`crates/dk-core/src/managed.rs` 的链式调用、`mcp.rs` 的 `TOOLS.iter().any`、`store.rs` 的 `namespaced`；clippy 另报 `single_char_add_str`——`push_str("；")` 改 `push('；')`）；② `ci.yml` 加 `permissions: contents: read`、`concurrency` 取消同一 ref 的旧运行、每个 job `timeout-minutes`、所有 cargo 命令带 `--locked`，并把「版本号三处同号」提到第一道 `meta` job；③ 新增 `release.yml`：tag 触发 → `version.mjs --expect` 拦版本错位 → linux-x64 / windows-x64 / macos-arm64 / macos-x64 四目标构建 → zip（二进制 + LICENSE + README）→ `SHA256SUMS` → `gh release create`，正文取自 §12；④ 新增 `scripts/version.mjs` 与 `scripts/release-notes.mjs`，CI 的 `meta` 连它们的失败路径一起测；⑤ 修 §12 里 v0.3.5 那行少了「理由」分隔符（整行只有两个格子，渲染时理由被塞进「变更」列）；⑥ `Cargo.toml` 的 `workspace.package` 删掉没人继承的 `homepage` / `readme`（cargo 每次都警告「unused field」）；⑦ 首发实测撞上两件「本地看不出来」的事：macOS 矩阵选的 `macos-13` / `macos-14` 都已下线（arm64 直接挂在 `configuration 'macos-14-arm64-us-default' is not supported`，x64 一直 `queued`），改成 `macos-15` / `macos-15-intel`；并且三个 job 的 `checkout` 都带 `ref: ${{ github.event.inputs.tag || github.ref_name }}`，于是「流水线自己写坏了」不必删 tag 重推——`gh workflow run release.yml -f tag=vX.Y.Z` 就能用 main 上的流水线、取该 tag 的代码重建资产；⑧ 首发 Release 的正文其实漏了半截——脚本按「版本号紧跟：」匹配，而「**v0.3.5 发布整理：**」那行是版本号后跟空格，于是只取到「功能」那行。改成「该版本号开头的行全取、按文件顺序拼」，e2e 里钉三条（多行都进正文 / 尾部带安装段 / 缺版本退出非 0），断言总数 70 → 73。 | 一个「有 CI」的仓库连续两次红着提交，比没有 CI 更坏：绿是一种承诺，破了就没人再看。根因是同一件事——门禁与发版都靠人手记：版本三处、Release 正文、打包命令各写一遍。现在三件事各有一个程序化出口：版本三处同号进 CI 第一道，Release 正文只有一个来源（§12 那一行，找不到就退出），打包与上传只在 `release.yml` 里有一份。顺带一条：CI 的 fmt 与 clippy 是**本地能先跑的**，红着提交只能说明提交前没跑。 |
+| 2026-11-25 | **v0.3.6：补上「改这个仓库」的那一层文档，并把能机检的判据搬进 CI**——① 新增 `MAINTAINING.md`（改动同步清单：改协议 / 工具参数 / 提示词 / 技能 / 断言数字各要跟着动哪儿；CI 的两个 job 各管什么；发版四步与「跑坏了不用挪 tag」；两个副本——插件是 link、技能是复制；五条已知坑）；② 根 `AGENTS.md` 从 18 行扩成入口：五条红线 + 提交前八条命令 + 指向 SPEC/MAINTAINING 的指路，dk 受管块原样保留；③ 新增 `scripts/check-maintain.mjs` 并进 CI 的 `meta` job：版本三处同号、断言总数（SPEC 的「N 条断言全过」、README 的自测注释与 e2e 实际 `ok()` 调用数三方一致）、文档预算（`AGENTS.md` ≤200 行、`MAINTAINING.md` ≤160 行）、引用可查（反引号里的仓库内路径必须存在、不许写「文件:行号」）、每个 `.md` 在文档地图里有一席之地；④ `README.md` 的发版段收成指针（正文的第二个家删掉）；⑤ Release 正文按圈号切成条目——§12 一格是表格单元、里面没有换行，原样拼进正文就是一面墙（v0.3.5 首发即如此，用户截图反馈「都没有换行」），e2e 加两条断言（条目数 ≥10、最长行 <500 字） | 教训一：文档的缺口不在「写得少」，而在「改的时候没人告诉你要动哪几处」——`README.md` 曾写着「73 条断言」而 e2e 实际已到 75 条，漂了一整版却没有任何一步会变红；所以这份手册自己也要能被判：能机检的进 CI，判不了的（「一处事实一个家」）才留给评审。教训二：「正文只有一个来源」这件事第二次证明自己——第一次是漏掉半截，这次是格式：同一条链路上的第二种排版也会骗人，而它同样只能靠生成它的那一步修，不能手改产物。 |

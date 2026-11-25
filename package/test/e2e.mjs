@@ -272,9 +272,15 @@ console.log('== 发版脚本：正文只有一个来源，同一版本的多行�
 // v0.3.5 在 §12 里分「功能」与「发布整理」两行：只取一行等于把另一半变更从 Release 里删掉，
 // 而 Release 正文又是脚本生成的，删了没人会当场发现（首发那次就漏了「发布整理」那半）。
 const notesV = node(['scripts/release-notes.mjs', 'v0.3.5'])
-ok('Release 正文把同一版本的多行都取上', /^v0\.3\.5：/.test(notesV.out) && /^v0\.3\.5 发布整理：/m.test(notesV.out),
-  (notesV.out.match(/^v0\.3\.5[^—]{0,12}/gm) || [notesV.err]).join(' / ').slice(0, 80))
+ok('Release 正文把同一版本的多行都取上', /^### v0\.3\.5：/.test(notesV.out) && /^### v0\.3\.5 发布整理：/m.test(notesV.out),
+  (notesV.out.match(/^### v0\.3\.5[^—]{0,12}/gm) || [notesV.err]).join(' / ').slice(0, 80))
 ok('正文尾部要带安装段（下载文件名带版本号）', /\*\*安装\*\*/.test(notesV.out) && notesV.out.includes('dk-v0.3.5-x86_64-pc-windows-msvc.zip'))
+// §12 的一格是表格单元，里面没有换行：原样拼进正文就是一面墙（v0.3.5 首发就是这样，用户截图反馈）。
+// 判据钉在「每项一行」与「最长行」上——换行是给人读的，退化回去要当场看见。
+const bullets = (notesV.out.match(/^- [①②③④⑤⑥⑦⑧⑨⑩]/gm) || []).length
+ok('正文按圈号切成条目（一条变更一行，不再是一面墙）', bullets >= 10, '条目数 ' + bullets)
+const longest = Math.max(...notesV.out.split('\n').map((l) => l.length))
+ok('正文里没有超长行（最长 500 字以内）', longest < 500, '最长行 ' + longest + ' 字')
 const notesMiss = node(['scripts/release-notes.mjs', 'v0.0.0'])
 ok('§12 没有那一版 → 退出非 0，不产出空正文', /没有 v0\.0\.0/.test(notesMiss.err) && notesMiss.out.trim() === '',
   notesMiss.err.trim().slice(0, 60))

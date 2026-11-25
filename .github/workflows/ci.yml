@@ -31,6 +31,10 @@ jobs:
           node-version: 22
       - name: 版本号三处同号（Cargo.toml / package.json / SPEC 标题）
         run: node scripts/version.mjs
+      # 维护手册里能判的那几条：断言总数、文档预算、引用可查。它曾经漂过一整版
+      # （README 写着 73 条断言，e2e 实际已经 75 条），漂着没有任何一步会变红。
+      - name: 文档与维护手册一致（断言总数 / 预算 / 引用）
+        run: node scripts/check-maintain.mjs
       # 「找不到就报错」这句话本身也要测：不存在的版本、不同号的 tag，都必须退出非 0。
       - name: 发版脚本的失败路径
         run: |

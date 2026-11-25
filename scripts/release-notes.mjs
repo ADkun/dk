@@ -42,8 +42,38 @@ if (hits.length === 0) {
   process.exit(1);
 }
 
+// §12 的一格是表格单元，里面没有换行：整版变更被压成一大面墙，贴进 Release 就是一段几百字的
+// 连续文字（v0.3.5 首发就是这么出去的）。按圈号切成条目、每项一行——内容一个字不改，只把墙拆成行。
+const CIRCLED = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳';
+function formatCell(cell) {
+  const text = cell.replace(/\*\*/g, ''); // 表格里的 ** 到正文里会变成孤立标记（标题被 ** 包住时尾部会剩一个）
+  const at = [...text].findIndex((ch) => CIRCLED.includes(ch));
+  if (at < 0) return text.trim(); // 没有圈号：本来就是一段话，原样
+  const chars = [...text];
+  const title = chars.slice(0, at).join('').replace(/[—－\-]+\s*$/, '').trim();
+  // 只按「下一个该出现的圈号」切：正文里会回头引「与 ① 同类」，那个 ① 不是新条目
+  const items = [];
+  let want = CIRCLED.indexOf(chars[at]);
+  let buf = '';
+  for (let i = at; i < chars.length; i++) {
+    const ch = chars[i];
+    const idx = CIRCLED.indexOf(ch);
+    if (idx === want) {
+      want++;
+      if (buf.trim()) items.push(buf);
+      buf = '';
+    }
+    buf += ch;
+  }
+  if (buf.trim()) items.push(buf);
+  const lines = [];
+  if (title) lines.push('### ' + title, '');
+  for (const item of items) lines.push('- ' + item.trim().replace(/[；;]+$/, ''));
+  return lines.join('\n');
+}
+
 const notes = [
-  hits.join('\n\n'),
+  hits.map(formatCell).join('\n\n'),
   '',
   '---',
   '',

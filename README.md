@@ -166,7 +166,8 @@ crates/dk/        CLI（只做参数与输出）
 package/          DSH 插件壳（原生工具名 + 内置拉起 + 一段提示词）
 skills/dk/        /dk 技能：发现模型跳过索引时，强制注入纪律
 SPEC.md           唯一权威规格：卡片格式、工具面、检索、硬门、三壳
-AGENTS.md         给改这个仓库的 agent 看的约定
+MAINTAINING.md    维护手册：改了东西要同步哪几处、CI 与发版怎么操作
+AGENTS.md         给 agent 的根入口：五条红线 + 提交前八条命令
 .dk/map.txt       本仓库自己的索引（dogfooding）
 scripts/          发版用的小脚本：版本三处同号、Release 正文取自 SPEC §12
 .github/workflows/ CI（三平台门禁）与 Release（打 tag 自动发版）
@@ -183,25 +184,19 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 node scripts/version.mjs            # 版本号三处同号（CI 的第一道就是它）
 node --test package/test/prompt.test.mjs   # 插件壳单元测试（需先 cargo build）
-node package/test/e2e.mjs           # 插件壳端到端：fake ctx 跑真链路，73 条断言
+node package/test/e2e.mjs           # 插件壳端到端：fake ctx 跑真链路，75 条断言
+node scripts/check-maintain.mjs     # 维护一致性：版本同号 / 断言总数 / 文档预算 / 引用可查
 dk check                            # 本仓库索引是否一致（CI 最后一步就是它）
 ```
 
 ## 发版（维护者）
 
-```bash
-node scripts/version.mjs --expect v0.3.6   # 先验：三处版本号与 tag 同号
-git tag v0.3.6 && git push origin v0.3.6
-```
-
-推 tag 就发版：`.github/workflows/release.yml` 校验 tag 与代码同号，按四个目标
-（linux-x64 / windows-x64 / macos-arm64 / macos-x64）构建、打包（二进制 + LICENSE + README）、
-算 SHA256SUMS，正文自动取自 `SPEC.md` §12 的那一行。所以发版前**先写变更记录**——
-Release 里不手写第二份。
+发版、CI、以及「改了东西要同步哪几处」，都在 `MAINTAINING.md`——那边是唯一一份维护手册，
+这里不写第二份：两处维护必然对不上（v0.2.7 的 Release 正文分叉就是这么来的）。
 
 ## 状态
 
-早期版本（v0.2.7），接口已稳定、细节仍会动。规格里标了 M4 的章节是**未实现的设计**，
+早期版本（v0.3.6），接口已稳定、细节仍会动。规格里标了 M4 的章节是**未实现的设计**，
 不当现状用——文档写未实现的实现，比缺文档更危险。
 
 ## License
