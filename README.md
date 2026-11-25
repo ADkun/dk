@@ -168,6 +168,8 @@ skills/dk/        /dk 技能：发现模型跳过索引时，强制注入纪律
 SPEC.md           唯一权威规格：卡片格式、工具面、检索、硬门、三壳
 AGENTS.md         给改这个仓库的 agent 看的约定
 .dk/map.txt       本仓库自己的索引（dogfooding）
+scripts/          发版用的小脚本：版本三处同号、Release 正文取自 SPEC §12
+.github/workflows/ CI（三平台门禁）与 Release（打 tag 自动发版）
 ```
 
 工具行为只有一个定义处：`crates/dk-core/src/serve.rs` 的 `handle`。CLI、`dk serve`、`dk mcp`、
@@ -179,10 +181,23 @@ DSH 插件都只是它的壳，任何壳里都不许出现业务判断。
 cargo test                          # 单元测试
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
+node scripts/version.mjs            # 版本号三处同号（CI 的第一道就是它）
 node --test package/test/prompt.test.mjs   # 插件壳单元测试（需先 cargo build）
 node package/test/e2e.mjs           # 插件壳端到端：fake ctx 跑真链路，70 条断言
 dk check                            # 本仓库索引是否一致（CI 最后一步就是它）
 ```
+
+## 发版（维护者）
+
+```bash
+node scripts/version.mjs --expect v0.3.6   # 先验：三处版本号与 tag 同号
+git tag v0.3.6 && git push origin v0.3.6
+```
+
+推 tag 就发版：`.github/workflows/release.yml` 校验 tag 与代码同号，按四个目标
+（linux-x64 / windows-x64 / macos-arm64 / macos-x64）构建、打包（二进制 + LICENSE + README）、
+算 SHA256SUMS，正文自动取自 `SPEC.md` §12 的那一行。所以发版前**先写变更记录**——
+Release 里不手写第二份。
 
 ## 状态
 

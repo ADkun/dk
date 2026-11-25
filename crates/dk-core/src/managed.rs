@@ -111,7 +111,11 @@ pub fn verify(root: &Path, rules: &Rules, raw: &str) -> Verdict {
 pub fn canonical_rel(root: &Path, rel: &str) -> Option<String> {
     let cr = fs::canonicalize(root).ok()?;
     let c = fs::canonicalize(root.join(rel)).ok()?;
-    let real = c.strip_prefix(&cr).ok()?.to_string_lossy().replace('\\', "/");
+    let real = c
+        .strip_prefix(&cr)
+        .ok()?
+        .to_string_lossy()
+        .replace('\\', "/");
     if real.is_empty() {
         None
     } else {

@@ -1,0 +1,127 @@
+name: Release
+
+# 发版只有一个入口：推一个 vX.Y.Z 的 tag。
+# 正文取自 SPEC.md §12 的那一行（scripts/release-notes.mjs）——变更与理由只在一个地方维护。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '已经存在的 tag（如 v0.3.5）'
+        required: true
+
+permissions:
+  contents: write
+
+# 发版不许并发：两个 job 同时往同一个 tag 上挂附件会互相覆盖。
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # tag 与代码里的版本号不同号，发出去的包会自带错误的版本——这是发版最廉价的护栏。
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - id: tag
+        name: tag 与代码版本同号
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          node scripts/version.mjs --expect "$tag"
+
+  build:
+    needs: verify
+    timeout-minutes: 40
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: macos-13
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      # 包里放二进制 + LICENSE + README：只给一个裸可执行文件，下载的人不知道这是什么。
+      - name: 打包（Linux / macOS）
+        if: runner.os != 'Windows'
+        env:
+          TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          set -eu
+          mkdir -p stage dist
+          cp "target/${{ matrix.target }}/release/dk" stage/
+          cp LICENSE README.md stage/
+          (cd stage && zip -q -r "../dist/dk-$TAG-${{ matrix.target }}.zip" .)
+      - name: 打包（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          New-Item -ItemType Directory -Force stage, dist | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/dk.exe", LICENSE, README.md -Destination stage
+          Compress-Archive -Path stage/* -DestinationPath "dist/dk-$env:TAG-${{ matrix.target }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dk-${{ matrix.target }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  publish:
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: 校验和
+        run: |
+          set -eu
+          cd dist
+          sha256sum *.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Release 正文（取自 SPEC §12）
+        env:
+          TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          set -eu
+          node scripts/release-notes.mjs "$TAG" > notes.md
+          head -3 notes.md
+      - name: 发 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          set -eu
+          gh release create "$TAG" dist/*.zip dist/SHA256SUMS.txt \
+            --title "$TAG" --notes-file notes.md --verify-tag

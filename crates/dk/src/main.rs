@@ -283,7 +283,9 @@ enum Shape {
 }
 
 fn print_matched(v: &Value, shape: Shape) -> bool {
-    let Some(m) = v.get("matched") else { return false };
+    let Some(m) = v.get("matched") else {
+        return false;
+    };
     let of = m.get("of").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
     let absent_n = m.get("absent_n").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
     let weak_n = m.get("weak_n").and_then(|x| x.as_u64()).unwrap_or(0) as usize;

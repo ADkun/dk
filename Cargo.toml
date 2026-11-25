@@ -7,8 +7,6 @@ version = "0.3.5"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/ADkun/dk"
-homepage = "https://github.com/ADkun/dk"
-readme = "README.md"
 rust-version = "1.88"
 
 [workspace.dependencies]

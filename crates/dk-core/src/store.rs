@@ -307,8 +307,7 @@ impl Store {
                 for item in r.split(',').map(str::trim) {
                     // 「不带命名空间」不能拿「含 :」判：Windows 盘符（D:/other/x.rs）与 URL 都带 :，
                     // 而前者恰恰是最常见的跨库写法，被这条判成有命名空间就静默写进卡（审查 P2-1）。
-                    let namespaced =
-                        item.starts_with("code:") || item.starts_with("database://");
+                    let namespaced = item.starts_with("code:") || item.starts_with("database://");
                     let bare = !item.is_empty() && !namespaced && item.contains('/');
                     if bare && !managed::exists_in_repo(self.root(), item) {
                         report.warnings.push(format!(

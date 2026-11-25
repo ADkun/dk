@@ -106,7 +106,11 @@ impl<'a> Index<'a> {
     /// 这张卡命中了哪些词——词面重叠的证据，不是「列对了」的判断。
     pub fn hit_terms<'s>(&self, idx: usize, terms: &[&'s str]) -> Vec<&'s str> {
         let m = &self.tf[idx];
-        terms.iter().copied().filter(|t| m.contains_key(*t)).collect()
+        terms
+            .iter()
+            .copied()
+            .filter(|t| m.contains_key(*t))
+            .collect()
     }
 
     /// 把查询词分成「有判别力 / 太常见 / 本仓没有」三堆。

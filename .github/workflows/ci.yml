@@ -4,9 +4,48 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+# CI 只验证、不发布：发布在 release.yml（那里才要 contents: write）。
+permissions:
+  contents: read
+
+# 同一分支的新推送取消上一次：CI 要回答的是「最新提交是不是绿的」，排队等旧提交没意义。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
+  # 最便宜的一道先跑：版本号三处同号这件事 30 秒就能判定，不必等三平台编译完才知道。
+  # 这条曾经漂过（SPEC 已写 v0.3.3，package.json 与 dk --version 还是 0.3.2）。
+  meta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 版本号三处同号（Cargo.toml / package.json / SPEC 标题）
+        run: node scripts/version.mjs
+      # 「找不到就报错」这句话本身也要测：不存在的版本、不同号的 tag，都必须退出非 0。
+      - name: 发版脚本的失败路径
+        run: |
+          set -eu
+          if node scripts/version.mjs --expect v0.0.0 >/dev/null 2>&1; then
+            echo "tag v0.0.0 与代码里的版本不同号，version.mjs 应当失败"; exit 1
+          fi
+          if node scripts/release-notes.mjs v0.0.0 >/dev/null 2>&1; then
+            echo "SPEC §12 里没有 v0.0.0，release-notes.mjs 应当失败"; exit 1
+          fi
+          echo "两条失败路径都按预期退出非 0"
+
   test:
+    needs: meta
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -18,14 +57,16 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      # --locked 是必须的：Cargo.lock 已入库，锁文件与清单对不上时就该当场红，
+      # 而不是悄悄解析出一套没人验证过的依赖（发版走 release.yml，必须同锁）。
       - name: fmt
-        run: cargo fmt --check
+        run: cargo fmt --all --check
       - name: clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
       - name: test
-        run: cargo test
+        run: cargo test --locked
       - name: build
-        run: cargo build --release
+        run: cargo build --release --locked
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -35,5 +76,6 @@ jobs:
         run: node --test package/test/prompt.test.mjs
       - name: 插件壳（fake-ctx 端到端）
         run: node package/test/e2e.mjs
+      # 索引自检放最后：卡要跟代码一起改。索引漂移在这里变红，而不是等下一次 dk_map 返回旧卡。
       - name: 本仓库索引自检
-        run: cargo run --release -- check
+        run: cargo run --release --locked -- check

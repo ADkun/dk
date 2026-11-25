@@ -113,9 +113,7 @@ fn reject_unknown_args(name: &str, args: &Value) -> Result<()> {
                 "get" => "（要看别的仓库：终端里跑 dk -C <目录> get <路径>，只读）",
                 _ => "",
             };
-            bail!(
-                "未知参数 {key}：{takes}（拼错的参数会被静默忽略，所以这里直接报错）{elsewhere}"
-            );
+            bail!("未知参数 {key}：{takes}（拼错的参数会被静默忽略，所以这里直接报错）{elsewhere}");
         }
     }
     Ok(())
@@ -270,9 +268,7 @@ fn init(store: &Store, args: &Value) -> Result<Value> {
 
 fn map(store: &Store, args: &Value) -> Result<Value> {
     if !store.is_initialized() {
-        return Ok(
-            json!({"status": "uninitialized", "hint": NO_INDEX_HINT}),
-        );
+        return Ok(json!({"status": "uninitialized", "hint": NO_INDEX_HINT}));
     }
     let (cards, _) = store.load()?;
     let idx = Index::build(&cards);
@@ -496,9 +492,12 @@ fn map(store: &Store, args: &Value) -> Result<Value> {
         }
         if !span.strong.is_empty() {
             if !h.is_empty() {
-                h.push_str("；");
+                h.push('；');
             }
-            h.push_str(&format!("{} 个有判别力的查询词一个也没对上", span.strong.len()));
+            h.push_str(&format!(
+                "{} 个有判别力的查询词一个也没对上",
+                span.strong.len()
+            ));
         }
         if h.is_empty() {
             // 走到这里有三种完全不同的原因，不能混成一句：词都太常见；分词后一个词都没有
@@ -528,12 +527,17 @@ fn map(store: &Store, args: &Value) -> Result<Value> {
         }
         h
     } else if degraded {
-        "只按字面字符兜底对上的，别当成结论：给 paths / dir 缩小范围，或自己 rg 一轮再来".to_string()
+        "只按字面字符兜底对上的，别当成结论：给 paths / dir 缩小范围，或自己 rg 一轮再来"
+            .to_string()
     } else if span.strong.is_empty() {
         // 只剩「本仓到处都有」的词：排序确实动了，但一个判别力都没有，hit 必然为空。
         // 不说清楚，调用方会以为 matched 坏了，或者以为这几张就是答案。
         // l0 返回的是目录不是卡，措辞跟着换（审查 F3）。
-        let unit = if level == "l0" { "这几个方向" } else { "这几张" };
+        let unit = if level == "l0" {
+            "这几个方向"
+        } else {
+            "这几张"
+        };
         format!("查询词在本仓都有、但过半卡片都有（没有判别力）：hit 为空是正常的，{unit}只按常见词排了个序——换成更具体的词，或直接给 paths")
     } else {
         "matched 只数有判别力的词：of 是分母（本仓出现过、且不是过半卡片都有的词），hit 是首张卡踩中的，absent 是本仓没有的词。absent 多就换词（hints 放源码/报错里的标识符），命中少就给 paths。词面重叠不等于答案在里面：卡片是导航，源码仍是事实".to_string()
@@ -627,9 +631,7 @@ fn freshness(store: &Store, c: &Card) -> &'static str {
 
 fn get(store: &Store, args: &Value) -> Result<Value> {
     if !store.is_initialized() {
-        return Ok(
-            json!({"status": "uninitialized", "hint": NO_INDEX_HINT}),
-        );
+        return Ok(json!({"status": "uninitialized", "hint": NO_INDEX_HINT}));
     }
     let want = arg_strs(args, "paths")?;
     if want.is_empty() {
@@ -703,9 +705,7 @@ fn put(store: &Store, args: &Value) -> Result<Value> {
 
 fn sweep_tool(store: &Store, args: &Value) -> Result<Value> {
     if !store.is_initialized() {
-        return Ok(
-            json!({"status": "uninitialized", "hint": NO_INDEX_HINT}),
-        );
+        return Ok(json!({"status": "uninitialized", "hint": NO_INDEX_HINT}));
     }
     let limit = arg_usize(args, "limit", Limits::default().sweep_batch)?;
     let b = sweep::sweep(store, limit)?;
@@ -721,9 +721,7 @@ fn sweep_tool(store: &Store, args: &Value) -> Result<Value> {
 
 fn check_tool(store: &Store) -> Result<Value> {
     if !store.is_initialized() {
-        return Ok(
-            json!({"status": "uninitialized", "hint": NO_INDEX_HINT}),
-        );
+        return Ok(json!({"status": "uninitialized", "hint": NO_INDEX_HINT}));
     }
     let r = check::run(store)?;
     Ok(json!({

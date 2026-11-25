@@ -90,7 +90,10 @@ fn call(store: &Store, params: Value) -> Value {
     // 与 serve::handle 用同一套改名规则：这条壳里多一条「带不带 dk_ 前缀」的差异，
     // 同一个工具在两处就会一边能用一边报未知（AGENTS.md：行为只有一处定义）。
     let bare = name.strip_prefix("dk_").unwrap_or(name);
-    if !serve::TOOLS.iter().any(|t| t.strip_prefix("dk_").unwrap_or(t) == bare) {
+    if !serve::TOOLS
+        .iter()
+        .any(|t| t.strip_prefix("dk_").unwrap_or(t) == bare)
+    {
         return json!({
             "content": [{"type": "text", "text": format!("未知工具 {name}；可用：{}", serve::TOOLS.join(" / "))}],
             "isError": true,
