@@ -259,6 +259,26 @@ ok('目录不存在：check 与 map 同答「工作目录不存在」',
   /工作目录不存在/.test(noDir.err) && /工作目录不存在/.test(noDirMap.err),
   (noDir.err || noDir.out).trim().slice(0, 60))
 
+// 跑 scripts/ 下的零依赖脚本：与 CLI 同样的道理，脚本自己也有假成功要测。
+const node = (args) => {
+  try {
+    return { out: execFileSync(process.execPath, args, { cwd: SELF, encoding: 'utf8' }), err: '' }
+  } catch (e) {
+    return { out: String(e.stdout || ''), err: String(e.stderr || e.message) }
+  }
+}
+
+console.log('== 发版脚本：正文只有一个来源，同一版本的多行都要取上 ==')
+// v0.3.5 在 §12 里分「功能」与「发布整理」两行：只取一行等于把另一半变更从 Release 里删掉，
+// 而 Release 正文又是脚本生成的，删了没人会当场发现（首发那次就漏了「发布整理」那半）。
+const notesV = node(['scripts/release-notes.mjs', 'v0.3.5'])
+ok('Release 正文把同一版本的多行都取上', /^v0\.3\.5：/.test(notesV.out) && /^v0\.3\.5 发布整理：/m.test(notesV.out),
+  (notesV.out.match(/^v0\.3\.5[^—]{0,12}/gm) || [notesV.err]).join(' / ').slice(0, 80))
+ok('正文尾部要带安装段（下载文件名带版本号）', /\*\*安装\*\*/.test(notesV.out) && notesV.out.includes('dk-v0.3.5-x86_64-pc-windows-msvc.zip'))
+const notesMiss = node(['scripts/release-notes.mjs', 'v0.0.0'])
+ok('§12 没有那一版 → 退出非 0，不产出空正文', /没有 v0\.0\.0/.test(notesMiss.err) && notesMiss.out.trim() === '',
+  notesMiss.err.trim().slice(0, 60))
+
 console.log('== 第二个 root：写链路（临时目录）==')
 rmSync(TEMP, { recursive: true, force: true })
 mkdirSync(join(TEMP, 'src'), { recursive: true })

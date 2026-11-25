@@ -183,7 +183,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 node scripts/version.mjs            # 版本号三处同号（CI 的第一道就是它）
 node --test package/test/prompt.test.mjs   # 插件壳单元测试（需先 cargo build）
-node package/test/e2e.mjs           # 插件壳端到端：fake ctx 跑真链路，70 条断言
+node package/test/e2e.mjs           # 插件壳端到端：fake ctx 跑真链路，73 条断言
 dk check                            # 本仓库索引是否一致（CI 最后一步就是它）
 ```
 

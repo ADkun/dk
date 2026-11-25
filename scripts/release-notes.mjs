@@ -28,19 +28,22 @@ const rows = read('SPEC.md')
   .split(/\r?\n/)
   .filter((line) => /^\|\s*\d{4}-\d{2}-\d{2}\s*\|/.test(line));
 
-let body = null;
+// 同一个版本号可能有多行（v0.3.5 就分「功能」与「发布整理」两行），全取、按文件顺序拼——
+// 只留最后一条等于把另一半变更从 Release 里删掉。
+const hits = [];
 for (const row of rows) {
   const cells = row.replace(/^\||\|$/g, '').split(/\s\|\s/);
-  const hit = cells.find((cell) => new RegExp('^\\*{0,2}v?' + version.replace(/\./g, '\\.') + '[：:]').test(cell));
-  if (hit) body = hit;
+  // 版本号后面可能是「：」，也可能是「 发布整理：」（同一版本的第二种记法），都算这一版
+  const hit = cells.find((cell) => new RegExp('^\\*{0,2}v?' + version.replace(/\./g, '\\.') + '(?=\\s|[：:]|$)').test(cell));
+  if (hit) hits.push(hit.replace(/^\*\*|\*\*$/g, '').trim());
 }
-if (!body) {
+if (hits.length === 0) {
   console.error('SPEC.md §12 里没有 v' + version + ' 这一行：先补变更记录，再发版（Release 正文不允许手写另一份）');
   process.exit(1);
 }
 
 const notes = [
-  body.replace(/^\*\*|\*\*$/g, '').trim(),
+  hits.join('\n\n'),
   '',
   '---',
   '',
