@@ -105,7 +105,8 @@ gh release view v0.3.6
 
 | 文件 | 给谁 | 说什么 |
 | --- | --- | --- |
-| `README.md` | 用 dk 的人 | 装、上手、常见问题 |
+| `README.md` | 用 dk 的人 | 装、上手、常见问题（首页，中文） |
+| `README.en.md` | English readers | English mirror of `README.md`; keep the two in sync, never fork facts |
 | `SPEC.md` | 改 dk 的人、复核者 | 协议、判据、验证计划、变更记录（唯一权威） |
 | `AGENTS.md` | agent | 红线、八条验收、指路 |
 | `MAINTAINING.md` | 维护者 | 这份：改动同步清单、CI 与发版操作 |

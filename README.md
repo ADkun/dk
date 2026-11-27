@@ -12,6 +12,8 @@
   写清四件事 —— <b>职责 · 关系 · 契约 · 约束</b>。改代码前查它，改完写回——<b>没有阶段、没有批次、没有审批流</b>。
 </p>
 
+<p align="center"><sub>简体中文 · <a href="README.en.md">English</a></sub></p>
+
 <p align="center">
   <a href="https://github.com/ADkun/dk/actions/workflows/ci.yml"><img src="https://github.com/ADkun/dk/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
