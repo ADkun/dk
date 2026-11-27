@@ -5,6 +5,7 @@
   "description": "把 dk 代码索引接进 DSH：内置拉起 dk serve、注册六个原生工具、追加一段系统提示词。",
   "type": "module",
   "main": "./index.js",
+  "icon": "logo.svg",
   "exports": {
     ".": "./index.js",
     "./package.json": "./package.json"
@@ -12,7 +13,8 @@
   "files": [
     "index.js",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "logo.svg"
   ],
   "scripts": {
     "test": "node --test test/prompt.test.mjs && node test/e2e.mjs"
