@@ -1,13 +1,29 @@
-# dk —— 轻量代码索引
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+    <img src="assets/logo.svg" width="76" height="76" alt="dk">
+  </picture>
+</p>
 
-[![CI](https://github.com/ADkun/dk/actions/workflows/ci.yml/badge.svg)](https://github.com/ADkun/dk/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](Cargo.toml)
+<h1 align="center">dk —— 轻量代码索引</h1>
 
-一个仓库一份 `.dk/map.txt`，一行一个文件，写清四件事：**职责、关系、契约、约束**。
-模型改代码前先查它，改完把动过的文件写回去。没有阶段、没有批次、没有审批流。
+<p align="center">
+  一个仓库一份 <code>.dk/map.txt</code>，一行一个文件，写清四件事：<b>职责、关系、契约、约束</b>。<br>
+  模型改代码前先查它，改完把动过的文件写回去。没有阶段、没有批次、没有审批流。
+</p>
+
+<p align="center">
+  <a href="https://github.com/ADkun/dk/actions/workflows/ci.yml"><img src="https://github.com/ADkun/dk/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="Cargo.toml"><img src="https://img.shields.io/badge/rust-1.88%2B-orange.svg" alt="Rust 1.88+"></a>
+</p>
 
 一句话：**把「这个仓库长什么样」从每次重新发现，变成一份可以带走、可以机检的索引。**
+
+<p align="center">
+  <a href="https://github.com/ADkun/dk/releases/download/v0.3.6/dk-promo.mp4"><img src="assets/promo-cover.png" width="720" alt="dk 介绍片：56 秒，看它怎么把碎片拼成一张地图"></a><br>
+  <sub><a href="https://github.com/ADkun/dk/releases/download/v0.3.6/dk-promo.mp4">▶ 看 56 秒介绍片</a></sub>
+</p>
 
 ## 为什么需要它
 

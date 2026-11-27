@@ -1,5 +1,8 @@
 # dk 排除声明（.gitignore 语法）。
 # 人在此写目录级排除，一次写清，例如：docs/theory/**
+
+# 过程目录：临时脚本、截图、安装报告（.gitignore 已忽略，索引也不收）
+_tmp/
 # 工具会把「判定不值得建卡」的精确路径追加到下方的 dk:proposed 分节。
 
 # dk:proposed
