@@ -25,11 +25,11 @@
 <p align="center">
   <a href="https://github.com/ADkun/dk/releases/download/v0.3.6/dk-promo.mp4">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="assets/promo-cover-dark.png">
-      <img src="assets/promo-cover.png" width="720" alt="dk intro film: 56 seconds, watch it stitch fragments into a map">
+      <source media="(prefers-color-scheme: dark)" srcset="assets/promo-cover-en-dark.png">
+      <img src="assets/promo-cover-en.png" width="720" alt="dk intro film — download it">
     </picture>
   </a><br>
-  <sub><a href="https://github.com/ADkun/dk/releases/download/v0.3.6/dk-promo.mp4">▶ Watch the 56-second intro</a></sub>
+  <sub><a href="https://github.com/ADkun/dk/releases/download/v0.3.6/dk-promo.mp4">▶ Download the intro</a></sub>
 </p>
 
 > **Contents**: [What is dk](#what-is-dk) · [Why use it](#why-use-it) · [Install](#install) · [Quickstart](#quickstart-30-seconds) · [The card](#the-card) · [Six tools](#six-tools) · [CLI](#cli) · [Design trade-offs](#three-hard-boundaries) · [Compared with AOCI](#compared-with-aoci) · [Project layout](#project-layout) · [Self-test](#development-and-self-test) · [License](#license)

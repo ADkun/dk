@@ -26,10 +26,10 @@
   <a href="https://github.com/ADkun/dk/releases/download/v0.3.6/dk-promo.mp4">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="assets/promo-cover-dark.png">
-      <img src="assets/promo-cover.png" width="720" alt="dk 介绍片：56 秒，看它怎么把碎片拼成一张地图">
+      <img src="assets/promo-cover.png" width="720" alt="dk 介绍片：看它怎么把碎片拼成一张地图">
     </picture>
   </a><br>
-  <sub><a href="https://github.com/ADkun/dk/releases/download/v0.3.6/dk-promo.mp4">▶ 看 56 秒介绍片</a></sub>
+  <sub><a href="https://github.com/ADkun/dk/releases/download/v0.3.6/dk-promo.mp4">▶ 下载介绍片</a></sub>
 </p>
 
 > **目录**：[这是什么](#这是什么) · [为什么](#为什么值得用) · [安装](#安装) · [30 秒上手](#30-秒上手) · [卡片格式](#卡片长什么样) · [六个工具](#六个工具) · [CLI](#cli) · [设计取舍](#三条硬边界) · [对比](#和-aoci-比) · [项目结构](#项目结构) · [自测](#开发与自测) · [License](#license)

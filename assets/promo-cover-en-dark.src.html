@@ -1,0 +1,96 @@
+<!doctype html>
+<!--
+  dk README promo cover · English dark source (1440×810)
+  出图（Windows + Edge headless）：
+    1) 2 倍出图
+       msedge --headless=new --disable-gpu --hide-scrollbars \
+              --force-device-scale-factor=2 --window-size=1440,810 \
+              --screenshot=<绝对路径>/out.png "file:///<绝对路径>/promo-cover-dark.src.html"
+    2) 降采样并覆盖成图
+       ffmpeg -y -i out.png -vf scale=1440:810:flags=lanczos -compression_level 100 <成图路径>
+  成图：亮色 → assets/promo-cover-en.png；暗色 → assets/promo-cover-en-dark.png
+  依赖：本机 JetBrains Maple Mono（中文可渲染，无需 @font-face）。
+  注意：面板里的 @hash 是装饰性示意，不是 .dk/map.txt 里的真实指纹。
+-->
+
+<!--
+  dk README 宣传图 · 源稿（1440×810）
+  出图（Windows + Edge，本机只有 Edge）：
+    1) 2 倍出图
+       msedge --headless=new --disable-gpu --hide-scrollbars \
+              --force-device-scale-factor=2 --window-size=1440,810 \
+              --screenshot=<绝对路径>/out.png "file:///<绝对路径>/promo-cover.src.html"
+    2) 降采样到 1440×810 并覆盖成图
+       ffmpeg -y -i out.png -vf scale=1440:810:flags=lanczos -compression_level 100 assets/promo-cover.png
+  依赖：本机已安装 JetBrains Maple Mono（中文可渲染，无需 @font-face）。
+  注意：面板里的 @hash 是装饰性示意，不是 .dk/map.txt 里的真实指纹。
+-->
+<html><head><meta charset="utf-8"><style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:1440px;height:810px;overflow:hidden}
+  body{background:#0B0C0E;font-family:'JetBrains Maple Mono',monospace;color:#E8EFEA;position:relative}
+  .glow{position:absolute;left:-220px;top:60px;width:940px;height:720px;background:radial-gradient(ellipse at 32% 40%, rgba(70,255,138,0.10), transparent 62%)}
+  .glow2{position:absolute;right:-180px;top:-40px;width:980px;height:880px;background:radial-gradient(ellipse at 58% 40%, rgba(70,255,138,0.09), transparent 66%)}
+  .crt{position:absolute;inset:0;background:repeating-linear-gradient(to bottom, rgba(255,255,255,0.020) 0 1px, transparent 1px 3px)}
+  .vig{position:absolute;inset:0;background:radial-gradient(ellipse at 48% 46%, transparent 42%, rgba(0,0,0,0.62) 100%)}
+  .brand{position:absolute;left:96px;top:72px;display:flex;align-items:center;gap:14px}
+  .brand .name{font-size:29px;letter-spacing:1px;color:#F2F4F6}
+  .brand .sub{font-size:13.5px;color:#7E948A;letter-spacing:2.4px;padding-top:9px}
+  h1{position:absolute;left:96px;top:186px;font-size:45px;line-height:1.33;font-weight:400;letter-spacing:0.5px;color:#DFE7E2}
+  h1 .g{color:#46FF8A}
+  .lead{position:absolute;left:96px;top:400px;width:600px;font-size:14.5px;line-height:1.8;color:#8B9C93}
+  .lead b{color:#C8D5CD;font-weight:400}
+  .rule{position:absolute;left:96px;top:488px;width:544px;height:1px;background:#1B2620}
+  .tool{position:absolute;left:96px;display:flex;align-items:baseline;gap:16px}
+  .tool .n{width:104px;color:#46FF8A;font-size:15px}
+  .tool .d{color:#A9BAB1;font-size:14.5px}
+  .foot{position:absolute;left:96px;bottom:44px;font-size:12.5px;color:#4E5F56;letter-spacing:1.4px}
+  .footR{position:absolute;right:92px;bottom:44px;font-size:12.5px;color:#4E5F56;letter-spacing:1.4px}
+  .panel{position:absolute;right:92px;top:150px;width:632px;border-radius:11px;background:#0D1310;border:1px solid #1E2B24;
+         box-shadow:0 30px 70px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.03);overflow:hidden}
+  .ph{display:flex;justify-content:space-between;align-items:center;padding:15px 22px;border-bottom:1px solid #18231D;background:rgba(70,255,138,0.025)}
+  .ph .f{font-size:15px;color:#DCE6E0;letter-spacing:0.6px}
+  .ph .r{font-size:12.5px;color:#5E7168;letter-spacing:1px}
+  .ph .r b{color:#46FF8A;font-weight:400}
+  .line{display:flex;justify-content:space-between;padding:10px 22px;font-size:14.5px;color:#6D8077;border-bottom:1px solid #121A15}
+  .line .h{color:#4E5F56}
+  .open{background:#0F1714;border-left:2px solid #46FF8A;padding:14px 22px 16px 20px;border-bottom:1px solid #121A15}
+  .oh{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px}
+  .oh .p{font-size:16px;color:#EAEEEB}
+  .oh .hh{font-size:13px;color:#FFC24A;opacity:.85}
+  .row{display:flex;gap:11px;margin-top:10px;font-size:14.5px;line-height:1.5}
+  .tag{flex:none;width:15px;color:#46FF8A;font-weight:700}
+  .tx{color:#B7C6BD}
+</style></head><body>
+<div class="glow"></div><div class="glow2"></div>
+<div class="brand">
+  <svg width="46" height="46" viewBox="0 0 100 100"><g transform="translate(50 50) skewX(-20) scale(0.9) translate(-50 -50)" stroke="#46FF8A" stroke-width="7" fill="none" stroke-linecap="round" stroke-linejoin="round"><line x1="44" y1="4.6" x2="44" y2="74"/><polyline points="44,26 16,50 44,74"/><line x1="60" y1="26" x2="60" y2="96.2"/><line x1="60" y1="56" x2="80" y2="36"/><line x1="60" y1="56" x2="86.1" y2="74.6"/></g><circle cx="50" cy="50" r="45" stroke="#FFC24A" stroke-width="3.5" fill="none"/></svg>
+  <div class="name">dk</div><div class="sub">LIGHTWEIGHT CODE INDEX</div>
+</div>
+<h1>Your repo's structure,<br>no longer re-learned —<br><span class="g">an index you carry</span></h1>
+<div class="lead">One line per file — <b>responsibility · relations ·<br>contracts · constraints</b>.<br>Check it before editing; write touched files back after.</div>
+<div class="rule"></div>
+<div class="tool" style="top:510px"><div class="n">dk_put</div><div class="d">Cheap to write — one line, one command</div></div>
+<div class="tool" style="top:554px"><div class="n">dk_map</div><div class="d">Find the right file — ask, get what to read</div></div>
+<div class="tool" style="top:598px"><div class="n">dk_check</div><div class="d">Stays honest — hashes live, staleness at a glance</div></div>
+<div class="foot">GITHUB.COM/ADKUN/DK · MIT</div>
+<div class="footR">SIX TOOLS · ONE PLAIN-TEXT INDEX</div>
+<div class="panel">
+  <div class="ph"><div class="f">.dk/map.txt</div><div class="r"><b>✓</b> hashes live · consistent</div></div>
+  <div class="line"><div>crates/dk-core/src/mcp.rs</div><div class="h">@0e178645</div></div>
+  <div class="line"><div>crates/dk-core/src/check.rs</div><div class="h">@0ea329b7</div></div>
+  <div class="open">
+    <div class="oh"><div class="p">crates/dk-core/src/serve.rs</div><div class="hh">@0fde75b3</div></div>
+    <div class="row"><div class="tag">F</div><div class="tx">Tool behavior has one definition: handle(req) → Reply</div></div>
+    <div class="row"><div class="tag">R</div><div class="tx">check.rs · mcp.rs · package/index.js · store.rs</div></div>
+    <div class="row"><div class="tag">A</div><div class="tx">handle(req: Req) -> Reply</div></div>
+    <div class="row"><div class="tag">S</div><div class="tx">All three shells share this one; no forking</div></div>
+  </div>
+  <div class="line"><div>package/index.js</div><div class="h">@091da55c</div></div>
+  <div class="line"><div>SPEC.md</div><div class="h">@083f4639</div></div>
+  <div class="line"><div>crates/dk-core/src/store.rs</div><div class="h">@0b7f1d24</div></div>
+  <div class="line"><div>AGENTS.md</div><div class="h">@0a1c9f83</div></div>
+  <div class="line"><div>MAINTAINING.md</div><div class="h">@09be2d41</div></div>
+</div>
+<div class="crt"></div><div class="vig"></div>
+</body></html>
