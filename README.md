@@ -21,7 +21,12 @@
 一句话：**把「这个仓库长什么样」从每次重新发现，变成一份可以带走、可以机检的索引。**
 
 <p align="center">
-  <a href="https://github.com/ADkun/dk/releases/download/v0.3.6/dk-promo.mp4"><img src="assets/promo-cover.png" width="720" alt="dk 介绍片：56 秒，看它怎么把碎片拼成一张地图"></a><br>
+  <a href="https://github.com/ADkun/dk/releases/download/v0.3.6/dk-promo.mp4">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="assets/promo-cover-dark.png">
+      <img src="assets/promo-cover.png" width="720" alt="dk 介绍片：56 秒，看它怎么把碎片拼成一张地图">
+    </picture>
+  </a><br>
   <sub><a href="https://github.com/ADkun/dk/releases/download/v0.3.6/dk-promo.mp4">▶ 看 56 秒介绍片</a></sub>
 </p>
 
