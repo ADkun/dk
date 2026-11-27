@@ -17,6 +17,10 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 pub const HEADER: &str = "#dk-tok:v1";
+/// 写在 HEADER 之后的一行提醒（`#` 开头，加载时当注释跳过）。map.txt 整行自校验，
+/// 手改必致坏行——把「别手改、怎么改」直接写在文件里，比藏在 SPEC 里更容易被看见。
+pub const HEADER_NOTE: &str =
+    "# 这是 dk 自校验索引（整行 hash 自校验），请勿手改：改卡用 dk put / dk_put，修坏行用 dk check --fix。";
 /// `.dkignore` 里「模型提议的排除」分节标记。人可整段删除。
 pub const PROPOSED_MARK: &str = "# dk:proposed";
 const LOCK_STALE: Duration = Duration::from_secs(60);
@@ -33,7 +37,7 @@ pub type ParseFailure = (usize, ParseError);
 /// 一次写入请求中的一条。
 /// 拒未知字段：schema 里写了 additionalProperties:false，实现不真拒就只是句场面话——
 /// 拼错 Fn/F 会被 serde 静默吞掉，模型以为写进去了（审查 F6）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct PutEntry {
     pub path: String,
@@ -52,6 +56,14 @@ pub struct PutEntry {
     /// 该文件不需要卡：删掉已有卡，并把路径追加进 `.dkignore`。
     #[serde(default)]
     pub skip: bool,
+    /// 删掉旧卡但不写入 `.dkignore`（与 `skip` 的差别）：文件仍受管。
+    /// 移动 / 改名后清理旧路径用它——`skip` 会把旧路径赶出受管范围，对「搬家」是错的语义。
+    #[serde(default)]
+    pub remove: bool,
+    /// 显式改名：把卡片从 `from` 指向的旧路径迁到 `path`，保留 F/R/A/S/@hash，
+    /// 并把全库指向旧路径的 R 引用改写到新路径。目标须已在磁盘上（先 mv 文件再 dk_put）。
+    #[serde(default)]
+    pub from: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -74,6 +86,8 @@ pub struct PutReport {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PutOpts {
     pub drop_bad: bool,
+    /// 只算不写：返回将要 added / updated / removed / dropped 的结果，不落盘、不动 .dkignore。
+    pub dry_run: bool,
 }
 
 /// 软门默认值（SPEC §8）。
@@ -260,6 +274,14 @@ impl Store {
                 report.rejected.push(format!("{}（路径不合法）", e.path));
                 continue;
             }
+            // remove：删卡但不进 .dkignore（与 skip 的差别）。移动 / 改名后的旧路径用它清理，
+            // 文件仍受管——skip 会把旧路径永久赶出索引范围，对「搬家」是错的语义。
+            if e.remove {
+                if map.remove(&raw).is_some() {
+                    report.removed.push(raw.clone());
+                }
+                continue;
+            }
             if e.skip {
                 if map.remove(&raw).is_some() {
                     report.removed.push(raw.clone());
@@ -321,6 +343,78 @@ impl Store {
                 continue;
             };
             let h = short_hash(&bytes);
+            // from：显式改名。把旧路径的卡迁到 path，保留 F/R/A/S，@hash 跟着新源码走，
+            // 并把全库指向旧路径的 R 引用一起改到新路径（否则留下悬空 R——诚实 mv 后
+            // check 报「坏 R」，mv 必须同时改引用，不能只改卡片自己）。
+            if let Some(from_in) = e.from.clone() {
+                let old_raw = managed::normalize(&from_in);
+                if old_raw == path {
+                    // 同名：当普通更新处理，别把卡删了又插回去。
+                } else if old_raw.is_empty()
+                    || old_raw.starts_with('/')
+                    || old_raw.contains(':')
+                    || old_raw.contains('@')
+                    || old_raw.split('/').any(|s| s == "..")
+                {
+                    report
+                        .rejected
+                        .push(format!("{path}（from 路径不合法：{from_in}）"));
+                    continue;
+                } else {
+                    let Some(old) = map.get(&old_raw).cloned() else {
+                        report
+                            .rejected
+                            .push(format!("{path}（from 指向不存在的卡片：{old_raw}）"));
+                        continue;
+                    };
+                    let mut card = old;
+                    card.path = path.clone();
+                    card.src_hash = h.clone();
+                    if let Some(v) = &e.f {
+                        card.f = v.clone();
+                    }
+                    if let Some(v) = &e.r {
+                        card.r = v.clone();
+                    }
+                    if let Some(v) = &e.a {
+                        card.a = v.clone();
+                    }
+                    if let Some(v) = &e.s {
+                        card.s = v.clone();
+                    }
+                    if e.tags.is_some() {
+                        card.tags = e.tags.clone().filter(|t| !t.is_empty());
+                    }
+                    // 回环校验：改名字段同样可能引入换行 / 分段标记。
+                    let line = card.render();
+                    let round_trip = !line.contains(['\n', '\r'])
+                        && matches!(Card::parse(&line), Ok(back) if back.body() == card.body());
+                    if !round_trip {
+                        report
+                            .rejected
+                            .push(format!("{path}（from 改名后字段会把卡片行切坏）"));
+                        continue;
+                    }
+                    map.remove(&old_raw);
+                    map.insert(path.clone(), card);
+                    report.removed.push(old_raw.clone());
+                    report.added.push(path.clone());
+                    let mut moved_refs = Vec::new();
+                    for (p, c) in map.iter_mut() {
+                        if rewrite_r(c, &old_raw, &path) {
+                            moved_refs.push(p.clone());
+                        }
+                    }
+                    if !moved_refs.is_empty() {
+                        report.warnings.push(format!(
+                            "{path}（改名自 {old_raw}）：同时改写了 {} 张卡的 R 引用：{}",
+                            moved_refs.len(),
+                            moved_refs.join("、")
+                        ));
+                    }
+                    continue;
+                }
+            }
             let orig = map.get(&path).cloned();
             match map.get_mut(&path) {
                 Some(c) => {
@@ -390,11 +484,25 @@ impl Store {
             }
         }
 
+        // 软门只跑本批动过的卡：一次 put 改 16 个文件却回吐全仓 100+ 条既有告警，
+        // 真正该看的 16 条反而被淹掉。全库软门体检归 dk_check（见 check::run 的 soft_warnings）。
+        let touched: Vec<String> = report
+            .added
+            .iter()
+            .chain(report.updated.iter())
+            .cloned()
+            .collect();
+        for p in &touched {
+            if let Some(c) = map.get(p) {
+                report.warnings.extend(soft_gate(c, limits));
+            }
+        }
         let mut out = String::new();
         out.push_str(HEADER);
         out.push('\n');
+        out.push_str(HEADER_NOTE);
+        out.push('\n');
         for c in map.values() {
-            report.warnings.extend(soft_gate(c, limits));
             out.push_str(c.render().trim_end());
             out.push('\n');
         }
@@ -411,26 +519,29 @@ impl Store {
             }
         }
 
-        // CAS：从读到写之间若被别的进程改过，直接失败，不做合并猜测。
-        if self.read_map_raw()? != before_raw {
-            bail!("索引在写入期间被其他进程修改，请重试");
-        }
-        let idx = self.index_file();
-        let tmp = self.dir.join("map.txt.tmp");
-        {
-            let mut f = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&tmp)
-                .with_context(|| format!("open {}", tmp.display()))?;
-            f.write_all(out.as_bytes())?;
-            f.sync_all()?;
-        }
-        fs::rename(&tmp, &idx).with_context(|| format!("rename -> {}", idx.display()))?;
+        // dry_run：算完就返回，不落盘、不动 .dkignore。并发安全仍靠下面正式写入前的 CAS。
+        if !opts.dry_run {
+            // CAS：从读到写之间若被别的进程改过，直接失败，不做合并猜测。
+            if self.read_map_raw()? != before_raw {
+                bail!("索引在写入期间被其他进程修改，请重试");
+            }
+            let idx = self.index_file();
+            let tmp = self.dir.join("map.txt.tmp");
+            {
+                let mut f = OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(true)
+                    .open(&tmp)
+                    .with_context(|| format!("open {}", tmp.display()))?;
+                f.write_all(out.as_bytes())?;
+                f.sync_all()?;
+            }
+            fs::rename(&tmp, &idx).with_context(|| format!("rename -> {}", idx.display()))?;
 
-        if !to_ignore.is_empty() {
-            self.append_proposed(&to_ignore)?;
+            if !to_ignore.is_empty() {
+                self.append_proposed(&to_ignore)?;
+            }
         }
         // 同批里同一个 path 出现两次时，added/updated 会各记一次。索引本身没错（后一条生效），
         // 但报告说「写了两个文件」是假话——而这份报告是 agent 判断「还差什么」的唯一依据。
@@ -446,9 +557,52 @@ impl Store {
     pub fn source_hash(&self, rel: &str) -> Option<String> {
         fs::read(self.root.join(rel)).ok().map(|b| short_hash(&b))
     }
+
+    /// 原始行（供 check 判定坏行能否就地重签；load 只给错误、不给行文）。
+    pub fn raw_lines(&self) -> Result<Vec<String>> {
+        Ok(self
+            .read_map_raw()?
+            .lines()
+            .map(|s| s.to_string())
+            .collect())
+    }
 }
 
-fn soft_gate(c: &Card, l: &Limits) -> Vec<String> {
+/// 把一张卡 R 里指向 `old` 的引用改到 `new`：裸路径 == old 的整条替换，
+/// code:old 的换成 code:new。返回是否改动。重渲染时 #hash 会随之重算。
+fn rewrite_r(card: &mut Card, old: &str, new: &str) -> bool {
+    if card.r == "-" {
+        return false;
+    }
+    let mut changed = false;
+    let tokens: Vec<String> = card
+        .r
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|t| {
+            if t == old {
+                changed = true;
+                new.to_string()
+            } else if let Some(rest) = t.strip_prefix("code:") {
+                if rest.trim() == old {
+                    changed = true;
+                    format!("code:{new}")
+                } else {
+                    t.to_string()
+                }
+            } else {
+                t.to_string()
+            }
+        })
+        .collect();
+    if changed {
+        card.r = tokens.join(", ");
+    }
+    changed
+}
+
+pub fn soft_gate(c: &Card, l: &Limits) -> Vec<String> {
     let mut w = Vec::new();
     let n = |s: &str| if s == "-" { 0 } else { s.chars().count() };
     if n(&c.f) > l.f {
@@ -570,9 +724,13 @@ mod tests {
                     s: None,
                     tags: None,
                     skip: false,
+                    ..Default::default()
                 }],
                 &limits,
-                PutOpts { drop_bad: false },
+                PutOpts {
+                    drop_bad: false,
+                    ..Default::default()
+                },
             )
             .unwrap()
         };
@@ -620,6 +778,7 @@ mod tests {
                     s: None,
                     tags: None,
                     skip: false,
+                    ..Default::default()
                 }],
                 &Limits::default(),
                 PutOpts::default(),
@@ -636,6 +795,7 @@ mod tests {
                 s: None,
                 tags: None,
                 skip: false,
+                ..Default::default()
             }],
             &Limits::default(),
             PutOpts::default(),
@@ -663,6 +823,7 @@ mod tests {
                 s: None,
                 tags: None,
                 skip: false,
+                ..Default::default()
             }],
             &Limits::default(),
             PutOpts::default(),
@@ -678,6 +839,7 @@ mod tests {
                     s: None,
                     tags: None,
                     skip: true,
+                    ..Default::default()
                 }],
                 &Limits::default(),
                 PutOpts::default(),
@@ -704,6 +866,7 @@ mod tests {
                     s: None,
                     tags: None,
                     skip: false,
+                    ..Default::default()
                 }],
                 &Limits::default(),
                 PutOpts::default(),
@@ -732,6 +895,7 @@ mod tests {
             s: None,
             tags: None,
             skip: false,
+            ..Default::default()
         }
     }
 
@@ -851,10 +1015,144 @@ mod tests {
             .put(
                 &[entry("src/a.rs")],
                 &Limits::default(),
-                PutOpts { drop_bad: true },
+                PutOpts {
+                    drop_bad: true,
+                    ..Default::default()
+                },
             )
             .unwrap();
         assert_eq!(rep.bad_lines_dropped, 1);
         assert!(s.load().unwrap().1.is_empty());
+    }
+
+    /// remove：删卡但不碰 .dkignore（文件仍受管）。这是移动/改名后清理旧路径的对称操作，
+    /// 与 skip（删卡 + 记入提议忽略）语义相反。
+    #[test]
+    fn remove_drops_card_without_touching_ignore() {
+        let root = tmp("store_remove");
+        fs::write(root.join("src/a.rs"), "fn a(){}\n").unwrap();
+        let s = Store::open(&root).unwrap();
+        s.ensure_layout().unwrap();
+        s.put(&[entry("src/a.rs")], &Limits::default(), PutOpts::default())
+            .unwrap();
+        assert_eq!(s.load().unwrap().0.len(), 1);
+        let rep = s
+            .put(
+                &[PutEntry {
+                    path: "src/a.rs".into(),
+                    remove: true,
+                    ..Default::default()
+                }],
+                &Limits::default(),
+                PutOpts::default(),
+            )
+            .unwrap();
+        assert_eq!(rep.removed, vec!["src/a.rs".to_string()]);
+        assert!(rep.proposed_ignore.is_empty(), "remove 不该写 .dkignore");
+        assert!(s.load().unwrap().0.is_empty());
+        let ignore = fs::read_to_string(s.ignore_path()).unwrap_or_default();
+        assert!(
+            !ignore.contains("src/a.rs"),
+            ".dkignore 不该出现 {ignore:?}"
+        );
+    }
+
+    /// from：显式改名——保留字段、重算 #hash，并把全库指向旧路径的 R 一起改写。
+    #[test]
+    fn from_renames_card_and_rewrites_references() {
+        let root = tmp("store_from");
+        fs::write(root.join("src/a.rs"), "fn a(){}\n").unwrap();
+        fs::write(root.join("src/b.rs"), "fn b(){}\n").unwrap();
+        fs::write(root.join("src/c.rs"), "fn c(){}\n").unwrap();
+        let s = Store::open(&root).unwrap();
+        s.ensure_layout().unwrap();
+        // a 有卡；b 通过 code: 依赖 a。
+        s.put(
+            &[
+                PutEntry {
+                    path: "src/a.rs".into(),
+                    f: Some("甲".into()),
+                    ..Default::default()
+                },
+                PutEntry {
+                    path: "src/b.rs".into(),
+                    f: Some("乙".into()),
+                    r: Some("code:src/a.rs".into()),
+                    ..Default::default()
+                },
+            ],
+            &Limits::default(),
+            PutOpts::default(),
+        )
+        .unwrap();
+        // 把 a 的卡改名为 c2（真名 src/c.rs 已在盘上）。
+        let rep = s
+            .put(
+                &[PutEntry {
+                    path: "src/c.rs".into(),
+                    from: Some("src/a.rs".into()),
+                    ..Default::default()
+                }],
+                &Limits::default(),
+                PutOpts::default(),
+            )
+            .unwrap();
+        assert!(rep.removed.contains(&"src/a.rs".to_string()));
+        assert!(rep.rejected.is_empty(), "{:?}", rep.rejected);
+        let cards = s.load().unwrap().0;
+        let by = |p: &str| cards.iter().find(|c| c.path == p).cloned();
+        assert!(by("src/a.rs").is_none(), "旧路径的卡应已消失");
+        let c = by("src/c.rs").expect("新路径应有卡");
+        assert_eq!(c.f, "甲", "from 应保留 F");
+        // 另一张卡原来指向 src/a.rs 的 R 应被改写成 src/c.rs。
+        let refer = cards
+            .iter()
+            .find(|x| x.r.contains("code:src/c.rs"))
+            .expect("指向旧路径的 R 应被改写为新路径");
+        assert!(!refer.r.contains("src/a.rs"));
+    }
+
+    /// dry_run：只算不写——报告照出，但索引与 .dkignore 一个字节都不动。
+    #[test]
+    fn dry_run_reports_but_writes_nothing() {
+        let root = tmp("store_dry");
+        fs::write(root.join("src/a.rs"), "fn a(){}\n").unwrap();
+        fs::write(root.join("src/b.rs"), "fn b(){}\n").unwrap();
+        let s = Store::open(&root).unwrap();
+        s.ensure_layout().unwrap();
+        s.put(&[entry("src/a.rs")], &Limits::default(), PutOpts::default())
+            .unwrap();
+        let before = fs::read(s.index_file()).unwrap();
+        let rep = s
+            .put(
+                &[PutEntry {
+                    path: "src/b.rs".into(),
+                    f: Some("乙".into()),
+                    ..Default::default()
+                }],
+                &Limits::default(),
+                PutOpts {
+                    dry_run: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(rep.added, vec!["src/b.rs".to_string()]);
+        let after = fs::read(s.index_file()).unwrap();
+        assert_eq!(before, after, "dry_run 不该改索引");
+        assert_eq!(s.load().unwrap().0.len(), 1, "dry_run 后仍只有一张卡");
+    }
+
+    /// 索引头有一行「请勿手改」提醒，新写入的索引必须带上它。
+    #[test]
+    fn index_header_carries_a_do_not_edit_note() {
+        let root = tmp("store_header_note");
+        fs::write(root.join("src/a.rs"), "fn a(){}\n").unwrap();
+        let s = Store::open(&root).unwrap();
+        s.ensure_layout().unwrap();
+        s.put(&[entry("src/a.rs")], &Limits::default(), PutOpts::default())
+            .unwrap();
+        let raw = fs::read_to_string(s.index_file()).unwrap();
+        assert!(raw.contains(HEADER_NOTE), "索引头应含提醒：{raw}");
     }
 }

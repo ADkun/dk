@@ -3,6 +3,7 @@
 //! 这里慢一点没关系——它不进模型流程，是人的命令。所以不做增量、不维护账本，
 //! 每次都是「遍历 + 并行哈希 + 逐卡比对」，结论只依赖磁盘现状。
 
+use crate::card::Card;
 use crate::ignore_rules::Rules;
 use crate::store::Store;
 use crate::sweep;
@@ -28,8 +29,13 @@ pub struct Report {
     pub uncarded_sample: Vec<String>,
     /// R 里 code: 指向的路径不存在。
     pub bad_r: Vec<String>,
-    /// 行号 + 原因（含行尾校验和不符）。
+    /// 行号 + 原因（含行尾校验和不符）+ 行摘要。
     pub malformed: Vec<String>,
+    /// 可原地修复的坏行：正文能解析、且卡上的 @src_hash 与当前源码哈希一致——
+    /// 只差 #hash 失配，重签一个正确的 #hash 即可（`dk check --fix` 干这个）。
+    pub repairable: Vec<String>,
+    /// 软门告警（SPEC §8）：写进去但不阻断，只在这里列出来让人看见。
+    pub soft_warnings: Vec<String>,
     /// 同一路径出现多张卡（保留先出现者）。
     pub duplicate: Vec<String>,
     /// .dkignore 里解析不了的模式：不致命，但那几行此刻等于不存在。
@@ -67,6 +73,8 @@ impl Report {
             ("未建卡", self.uncarded),
             ("坏 R", self.bad_r.len()),
             ("坏行", self.malformed.len()),
+            ("可修复", self.repairable.len()),
+            ("软门", self.soft_warnings.len()),
             ("重复", self.duplicate.len()),
             (".dkignore 坏模式", self.ignore_warnings.len()),
         ] {
@@ -99,8 +107,22 @@ pub fn run(store: &Store) -> Result<Report> {
 
     let (cards, errors) = store.load()?;
     rep.cards = cards.len();
-    for (line, e) in errors {
-        rep.malformed.push(format!("第 {line} 行：{e}"));
+    if !errors.is_empty() {
+        let raw_lines = store.raw_lines()?;
+        for (line, e) in &errors {
+            let text = raw_lines
+                .get(line.saturating_sub(1))
+                .map(|s| s.trim_end())
+                .unwrap_or("");
+            rep.malformed
+                .push(format!("第 {line} 行：{e}｜{}", preview_line(text)));
+            if let Some(card) = repairable_card(text, root) {
+                rep.repairable.push(format!(
+                    "第 {line} 行：{}（保住 @{} 与字段，只重签 #hash）",
+                    card.path, card.src_hash
+                ));
+            }
+        }
     }
 
     let files = sweep::walk(root, &rules)?.files;
@@ -135,6 +157,12 @@ pub fn run(store: &Store) -> Result<Report> {
                 }
             }
         }
+    }
+
+    let limits = crate::store::Limits::default();
+    for card in by_path.values() {
+        rep.soft_warnings
+            .extend(crate::store::soft_gate(card, &limits));
     }
 
     let mut uncarded = Vec::new();
@@ -181,6 +209,80 @@ fn hash_all(root: &Path, files: &[String]) -> BTreeMap<String, String> {
     out
 }
 
+/// 坏行预览：给 check 报「这一行长什么样」，省得为了看懂一个 checksum mismatch 去翻整份索引。
+fn preview_line(text: &str) -> String {
+    let t = text.trim();
+    let mut chars = t.chars();
+    let head: String = chars.by_ref().take(72).collect();
+    if chars.next().is_some() {
+        format!("{head}…")
+    } else {
+        head
+    }
+}
+
+/// 一行坏行能否「只重签 #hash」修好：去掉行尾 #hash 后正文必须能解析成卡，
+/// 且卡上的 @src_hash 必须等于当前源码哈希——否则源码已变（stale），得重读重写。
+fn repairable_card(text: &str, root: &Path) -> Option<Card> {
+    let sep = text.rfind(" #")?;
+    let body = &text[..sep];
+    let card = Card::parse_body(body).ok()?;
+    let h = std::fs::read(root.join(&card.path))
+        .ok()
+        .map(|b| crate::card::short_hash(&b))?;
+    (h == card.src_hash).then_some(card)
+}
+
+/// `dk check --fix` 的修复报告。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct RepairReport {
+    pub repaired: usize,
+    pub unrepaired: usize,
+    pub details: Vec<String>,
+}
+
+/// `dk check --fix`：把「只差 #hash」的坏行按现行内容重签，其余原样保留并报告。
+/// 调用方需已持有写锁（CLI 的 Check --fix 会先 Lock::acquire）。
+pub fn repair(store: &Store) -> Result<RepairReport> {
+    let path = store.index_file();
+    let raw = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut out_lines: Vec<String> = Vec::new();
+    let mut rep = RepairReport::default();
+    for (i, line) in raw.lines().enumerate() {
+        let t = line.trim_end();
+        if t.is_empty() || t.starts_with('#') {
+            out_lines.push(line.to_string());
+            continue;
+        }
+        match Card::parse(t) {
+            Ok(_) => out_lines.push(line.to_string()),
+            Err(e) => {
+                if let Some(card) = repairable_card(t, store.root()) {
+                    out_lines.push(card.render());
+                    rep.repaired += 1;
+                    rep.details
+                        .push(format!("第 {} 行：已重签（{}）", i + 1, card.path));
+                } else {
+                    out_lines.push(line.to_string());
+                    rep.unrepaired += 1;
+                    rep.details.push(format!(
+                        "第 {} 行：无法自动修复（{e}）——源码已变或正文不合法，请重读源码后 dk_put 重写",
+                        i + 1
+                    ));
+                }
+            }
+        }
+    }
+    if rep.repaired > 0 {
+        let mut text = out_lines.join("\n");
+        text.push('\n');
+        let tmp = path.with_extension("txt.tmp");
+        std::fs::write(&tmp, text)?;
+        std::fs::rename(&tmp, &path)?;
+    }
+    Ok(rep)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,6 +308,7 @@ mod tests {
             s: None,
             tags: None,
             skip: false,
+            ..Default::default()
         }
     }
 
@@ -307,5 +410,81 @@ mod tests {
         let r = run(&s).unwrap();
         assert_eq!(r.malformed.len(), 1);
         assert!(!r.is_clean());
+    }
+
+    /// 只改字段不碰 @src_hash 的坏行 → 可判为「可修复」，repair 就地重签，无需重读重写。
+    #[test]
+    fn repairable_bad_line_is_fixed_in_place() {
+        let root = tmp("check_repair");
+        fs::write(root.join("src/a.rs"), "fn a(){}").unwrap();
+        let s = Store::open(&root).unwrap();
+        s.ensure_layout().unwrap();
+        s.put(
+            &[entry("src/a.rs", "甲")],
+            &Limits::default(),
+            PutOpts::default(),
+        )
+        .unwrap();
+        let p = s.index_file();
+        let t = fs::read_to_string(&p).unwrap().replace("F:甲", "F:乙");
+        fs::write(&p, t).unwrap();
+        let r = run(&s).unwrap();
+        assert_eq!(r.malformed.len(), 1);
+        assert_eq!(r.repairable.len(), 1, "正文合法且 @src_hash 未变，应可修复");
+        let rr = repair(&s).unwrap();
+        assert_eq!(rr.repaired, 1);
+        assert_eq!(rr.unrepaired, 0);
+        let r = run(&s).unwrap();
+        assert!(r.malformed.is_empty(), "修复后不该再有坏行");
+        assert!(r.is_clean(), "{:?}", r);
+    }
+
+    /// 源码已变的坏行 → @src_hash 对不上，不可修复，只能重读重写。
+    #[test]
+    fn stale_bad_line_is_not_repairable() {
+        let root = tmp("check_stale_bad");
+        fs::write(root.join("src/a.rs"), "fn a(){}").unwrap();
+        let s = Store::open(&root).unwrap();
+        s.ensure_layout().unwrap();
+        s.put(
+            &[entry("src/a.rs", "甲")],
+            &Limits::default(),
+            PutOpts::default(),
+        )
+        .unwrap();
+        // 既手改字段、又让源码内容变了。
+        let p = s.index_file();
+        let t = fs::read_to_string(&p).unwrap().replace("F:甲", "F:乙");
+        fs::write(&p, t).unwrap();
+        fs::write(root.join("src/a.rs"), "fn a(){ /* changed */ }").unwrap();
+        let r = run(&s).unwrap();
+        assert_eq!(r.malformed.len(), 1);
+        assert!(r.repairable.is_empty(), "源码已变，不该判可修复");
+        let rr = repair(&s).unwrap();
+        assert_eq!(rr.repaired, 0);
+        assert_eq!(rr.unrepaired, 1);
+    }
+
+    /// 软门：超建议长度的卡写进去了，但 check 会告警；它不弄脏 is_clean。
+    #[test]
+    fn soft_warnings_surface_without_dirtying_check() {
+        let root = tmp("check_soft");
+        fs::write(root.join("src/a.rs"), "fn a(){}").unwrap();
+        let s = Store::open(&root).unwrap();
+        s.ensure_layout().unwrap();
+        let long = "x".repeat(201);
+        s.put(
+            &[entry("src/a.rs", &long)],
+            &Limits::default(),
+            PutOpts::default(),
+        )
+        .unwrap();
+        let r = run(&s).unwrap();
+        assert!(
+            r.soft_warnings.iter().any(|w| w.contains("F 超过")),
+            "应报软门告警，实际 {:?}",
+            r.soft_warnings
+        );
+        assert!(r.is_clean(), "软门不该弄脏 is_clean：{:?}", r);
     }
 }

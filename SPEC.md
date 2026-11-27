@@ -1,4 +1,4 @@
-# dk — 代码认知层（SPEC v0.3.6）
+# dk — 代码认知层（SPEC v0.3.7）
 
 > 一行一张卡，一次写入一次收获。**任意体量的项目，AOCI 级治理能力，零重建成本。**
 > Rust · 不依赖 git · 不依赖 harness · 单文件分发
@@ -214,23 +214,28 @@ S 的双问铁律：能否从 path+F+R+A 推出？能推出就不写。不写会
 
 ### dk_get
 入参：`{ paths: string[] }`
-返回：`{ count, cards: [{ path, state: fresh | stale | uncarded | missing, card, siblings: [{ path, F }] }] }`。
+返回：`{ count, cards: [{ path, state: fresh | stale | uncarded | missing, card, F, R, A, S, tags, siblings: [{ path, F }] }] }`。
+
+除 `card`（渲染行）外，每张卡另给结构化字段 `F/R/A/S/tags`——agent 不必再自己拆卡片行。
 
 `siblings` 是**同目录兄弟，不是 R 邻居**：命中一个文件后这一族往往要一起动。最多 5 条，每条只给一行摘要
 （要给全卡就再 `dk_get` 一次，按需付费）。路径没有卡时给 `state:"uncarded"` 加一句 hint，不报错。
 **不返回源码**，只返回路径与行数，源码由 agent 自己读。
 
 ### dk_put
-入参：`{ entries: [{ path, F?, R?, A?, S?, tags?, skip?: boolean }] }`
+入参：`{ entries: [{ path, F?, R?, A?, S?, tags?, skip?, remove?, from? }], dry_run?: boolean }`
 语义：**传了的字段覆盖，没传的保留**；新路径则补全创建。`skip:true` 表示该文件不需要卡，删掉已有卡并追加进 `.dkignore` 的 `# dk:proposed` 分节。
+
+`remove:true` 与 `skip` 相反：删掉旧卡但**不碰 `.dkignore`**（文件仍受管）——移动/改名后清理旧路径用它，这是「无副作用删卡」。`from:<旧路径>` 是显式改名：把卡从旧路径迁到 `path`，保留 `F/R/A/S/tags`、`@<h8>` 跟着新源码重算，并把全库指向旧路径的 `R` 引用一起改写（`code:<旧>` 与恰好等于旧路径的裸路径），否则会留下悬空 R。**移动 = 先 `shell mv` 文件、再 `dk_put {path:新, from:旧}`**——dk 是索引不是重构器，不做 `fs::rename`。
 `@<h8>` 由工具在读文件时现算，**模型不提供**——这是「卡绑定的是我刚读过的那个版本」的唯一保证。
 
-字段名 `F/R/A/S` 大小写都收（与卡片格式一致的大写为主名）。返回体：`{ added, updated, removed, proposed_ignore, rejected, bad_lines_kept, bad_lines_dropped, warnings, coverage }`。
+字段名 `F/R/A/S` 大小写都收（与卡片格式一致的大写为主名）。返回体：`{ added, updated, removed, proposed_ignore, rejected, bad_lines_kept, bad_lines_dropped, warnings, dry_run, coverage }`。顶层 `dry_run:true` 只算不写：照常回 `added/updated/removed` 与 warnings，但不动索引、不动 `.dkignore`（`next` 会提示未落盘；CLI 对应 `dk put --dry-run`）。
 
 **写入前一次性过全部硬门（§8）**，任一项不过就整条拒收并写进 `rejected`——绝不「先写进去再让 check 报错」。一个普通文件名（`img/logo@2x.png`）能永久弄坏索引，这不是边缘情况。
 
 ### dk_check
-六个工具之一（CLI / `dk serve` / `dk mcp` / 插件壳都注册它，壳里没有第二份判断）。全量并行体检，输出六类问题：坏行 / 过期 / 未建卡 / 失联（有卡但文件不在受管范围）/ 坏 R / 重复，外加一条告警：`.dkignore` 坏模式。
+六个工具之一（CLI / `dk serve` / `dk mcp` / 插件壳都注册它，壳里没有第二份判断）。全量并行体检，输出六类问题：坏行 / 过期 / 未建卡 / 失联（有卡但文件不在受管范围）/ 坏 R / 重复；另加两类附加信息：`.dkignore` 坏模式告警，与软门告警（§8，卡已写进去，只是超建议长度、不阻断）。
+坏行里「正文合法、且 `@<h8>` 仍等于当前源码哈希」的另列为 `repairable`——这类只是 `#hash` 被手改而失配，`dk check --fix` 就地重签即可，不必重读重写；`@<h8>` 对不上的属 stale，只能重读重写。
 **未建完时非零退出**（漏建必须可见）。
 
 ### 工作目录与仓库根
@@ -402,7 +407,7 @@ AGENTS.md 受管块内容（不得出现 harness 工具名，见 A5）：
 | 单卡总长 | 800 字符 | 总量控制优先于分段控制 |
 | 每批 sweep | 10 个文件 | 模型可按上下文预算自调 |
 
-软门不阻断的理由：不同项目的密度天然不同，用硬门会把写得好的长卡砍掉。**可见性 > 强制。**
+软门不阻断的理由：不同项目的密度天然不同，用硬门会把写得好的长卡砍掉。**可见性 > 强制。** `dk_put` 只对本批写入的卡报软门告警；`dk check` 对全库报。
 
 ---
 
@@ -476,7 +481,7 @@ CLI 的 `dk get/map/put/sweep` 保留给人和脚本；模型侧一律走 `serve
 
 **不注册任何钩子。** 它没有业务逻辑，只有转发。
 
-实现是 `package/index.js`，456 行，其中 107 行是六份工具 schema 的声明（`package/index.js:278-384`，与 `serve::handle` 逐参数对齐），真正的手写逻辑 349 行：一个按 root 复用的 `dk serve` 客户端（NDJSON 分行、
+实现是 `package/index.js`，459 行，其中 110 行是六份工具 schema 的声明（`package/index.js:278-387`，与 `serve::handle` 逐参数对齐），真正的手写逻辑 349 行：一个按 root 复用的 `dk serve` 客户端（NDJSON 分行、
 **pending 按子进程归属**、按 id 结单、超时、中止、死亡重起）+ 仓库根上溯 + 二进制探测 +
 注册循环 + 一段提示词。零 `@deepseek-ai/*` 运行时依赖，`Config` 用 `createRequire` 探测
 `@deepseek-ai/schemastery`，探测不到只是没有设置页表单，不影响插件工作。
@@ -805,3 +810,4 @@ v0.3.1 交出去后再做一轮独立复核（子代理拿已装的二进制实�
 | 2026-11-25 | v0.3.5：v0.3.4 的第四轮对抗复核修六处（复核把判据改成「照抄引导得到的必须是**同一个二进制**的语义」，并列出「成功地空着回去」的形态清单）——① `repo_file` 只做字符串归一，于是 `dk_get crates`、`dk_get package/`、拼错的 `src/alhpa.rs` 全回 `state:"uncarded"`＝**对目录断言「这文件没建卡」**（新增 `require_real_file`：正名失败报「磁盘上没有它」，正名成目录报「这是目录，看目录用 dir」）；② `dir:"nope"` 回 `count:0`，与①同类（现报「只认库内已存在的目录」）；③ `check`/`sweep` 对「目录不存在」说「先问这个仓库的人」，而 `map` 说「工作目录不存在」——两句话对应两种下一步，抽出 `serve::require_repo`（先 `is_dir` 再 `is_initialized`）；④ 提示里写的 `dk` 与插件实跑的二进制可能不是同一个（本机 `command -v dk` 是 0.2.7，插件跑 0.3.x；照抄那句命令拿到的 `next` 还是「先 dk_sweep 补卡」，正是这段话要治的病），GUIDANCE 改成 `guidanceFor(server.binary)`，探测到绝对路径就把二进制写进提示；⑤ SPEC §3 原写「不带命名空间的 R 项不校验、也不会连上邻居」是假话（库内裸路径仍按路径连邻居，实测 `src/alpha.rs` 出现在 R 邻居里），改成「不校验存在性 ≠ 不连邻居」；⑥ 「一句系统提示词」改成「一段」——复核先只找出三处（§8 结构树、`package/README.md` 配置表、`package.json` description），第五轮又补出两处（`package/index.js` 文件头、`package/cordis.patch.yml` 注释）。⑦ 第五轮复核（agent-5/6）修四处「文案与实跑不一致」：提示里的二进制路径改**正斜杠**（反斜杠那串粘进 Git Bash 是 exit 127，人只会以为路径写错了、退回 PATH 上的旧 `dk`，恰好落回这段提示要治的病）；GUIDANCE 引号里的「索引不全」改成真状态名 `incomplete`（输出里没有那四个字）；§9.3 同一句也改；§9.3 的「441 行」改成实测行数（456）。断言 62 → 70（新增：`get`/`paths` 收目录、拼错的文件名、不存在的 `dir`、提示词点名实跑二进制、目录不存在时两壳同答、提示里的路径用正斜杠、提示词不引用实跑里没有的状态字符串）。⑧ 终检（只读，agent-7）又抓出两处：§9.3 的拆分数字跟着总数一起漂了（原写「约 190 行 schema / 265 行手写」，实测 `package/index.js:278-384` 是 107 行、手写 349 行——190 是 v0.2.2「335 行」时代的数，改总数时没跟着改，265 又是按 190 反算的，于是两个数一起错）；`Cargo.toml` 与 `crates/dk-core/Cargo.toml` 还声明着 rayon 而源码零使用、§9.1 却写「不引 rayon」，删掉这个依赖（`check.rs` 用的是 `std::thread::scope`，本来就够）。顺带给 `dir:"nope"` 的报错补了出路（同类报错都有下一步，它原来只有「磁盘上没有它」）。**保留** GUIDANCE 第七句：复核建议删掉它（与 `incomplete.next` 重复），但常驻那句管的是模型**没机会看到 `next`** 的场合（索引刚好 100% 时它也在），删了等于把约束绑在「一定会走到 incomplete」上。 | 教训：假话的形态要**列清单再一条条测**——「越界」只是一种，目录、拼错的名字、不存在的目录同样会「成功地空着回去」；而「引导里的命令照抄能跑」还缺一个前提：**在哪一个二进制上照抄**。 |
 | 2026-11-25 | **v0.3.5 发布整理：CI 从「红着没人管」修回绿，并补上 tag 触发的发版流水线**——① v0.3.5 那两个提交上 `cargo fmt --check` 与 `clippy -D warnings` 本来就是红的（最近两次 CI 都在 27 秒内挂在 fmt：`crates/dk/src/main.rs` 的 let-else、`crates/dk-core/src/managed.rs` 的链式调用、`mcp.rs` 的 `TOOLS.iter().any`、`store.rs` 的 `namespaced`；clippy 另报 `single_char_add_str`——`push_str("；")` 改 `push('；')`）；② `ci.yml` 加 `permissions: contents: read`、`concurrency` 取消同一 ref 的旧运行、每个 job `timeout-minutes`、所有 cargo 命令带 `--locked`，并把「版本号三处同号」提到第一道 `meta` job；③ 新增 `release.yml`：tag 触发 → `version.mjs --expect` 拦版本错位 → linux-x64 / windows-x64 / macos-arm64 / macos-x64 四目标构建 → zip（二进制 + LICENSE + README）→ `SHA256SUMS` → `gh release create`，正文取自 §12；④ 新增 `scripts/version.mjs` 与 `scripts/release-notes.mjs`，CI 的 `meta` 连它们的失败路径一起测；⑤ 修 §12 里 v0.3.5 那行少了「理由」分隔符（整行只有两个格子，渲染时理由被塞进「变更」列）；⑥ `Cargo.toml` 的 `workspace.package` 删掉没人继承的 `homepage` / `readme`（cargo 每次都警告「unused field」）；⑦ 首发实测撞上两件「本地看不出来」的事：macOS 矩阵选的 `macos-13` / `macos-14` 都已下线（arm64 直接挂在 `configuration 'macos-14-arm64-us-default' is not supported`，x64 一直 `queued`），改成 `macos-15` / `macos-15-intel`；并且三个 job 的 `checkout` 都带 `ref: ${{ github.event.inputs.tag || github.ref_name }}`，于是「流水线自己写坏了」不必删 tag 重推——`gh workflow run release.yml -f tag=vX.Y.Z` 就能用 main 上的流水线、取该 tag 的代码重建资产；⑧ 首发 Release 的正文其实漏了半截——脚本按「版本号紧跟：」匹配，而「**v0.3.5 发布整理：**」那行是版本号后跟空格，于是只取到「功能」那行。改成「该版本号开头的行全取、按文件顺序拼」，e2e 里钉三条（多行都进正文 / 尾部带安装段 / 缺版本退出非 0），断言总数 70 → 73。 | 一个「有 CI」的仓库连续两次红着提交，比没有 CI 更坏：绿是一种承诺，破了就没人再看。根因是同一件事——门禁与发版都靠人手记：版本三处、Release 正文、打包命令各写一遍。现在三件事各有一个程序化出口：版本三处同号进 CI 第一道，Release 正文只有一个来源（§12 那一行，找不到就退出），打包与上传只在 `release.yml` 里有一份。顺带一条：CI 的 fmt 与 clippy 是**本地能先跑的**，红着提交只能说明提交前没跑。 |
 | 2026-11-25 | **v0.3.6：补上「改这个仓库」的那一层文档，并把能机检的判据搬进 CI**——① 新增 `MAINTAINING.md`（改动同步清单：改协议 / 工具参数 / 提示词 / 技能 / 断言数字各要跟着动哪儿；CI 的两个 job 各管什么；发版四步与「跑坏了不用挪 tag」；两个副本——插件是 link、技能是复制；五条已知坑）；② 根 `AGENTS.md` 从 18 行扩成入口：五条红线 + 提交前八条命令 + 指向 SPEC/MAINTAINING 的指路，dk 受管块原样保留；③ 新增 `scripts/check-maintain.mjs` 并进 CI 的 `meta` job：版本三处同号、断言总数（SPEC 的「N 条断言全过」、README 的自测注释与 e2e 实际 `ok()` 调用数三方一致）、文档预算（`AGENTS.md` ≤200 行、`MAINTAINING.md` ≤160 行）、引用可查（反引号里的仓库内路径必须存在、不许写「文件:行号」）、每个 `.md` 在文档地图里有一席之地；④ `README.md` 的发版段收成指针（正文的第二个家删掉）；⑤ Release 正文按圈号切成条目——§12 一格是表格单元、里面没有换行，原样拼进正文就是一面墙（v0.3.5 首发即如此，用户截图反馈「都没有换行」），e2e 加两条断言（条目数 ≥10、最长行 <500 字） | 教训一：文档的缺口不在「写得少」，而在「改的时候没人告诉你要动哪几处」——`README.md` 曾写着「73 条断言」而 e2e 实际已到 75 条，漂了一整版却没有任何一步会变红；所以这份手册自己也要能被判：能机检的进 CI，判不了的（「一处事实一个家」）才留给评审。教训二：「正文只有一个来源」这件事第二次证明自己——第一次是漏掉半截，这次是格式：同一条链路上的第二种排版也会骗人，而它同样只能靠生成它的那一步修，不能手改产物。 |
+| 2026-11-28 | **v0.3.7：把「文件移动/改名」做成 dk_put 的一等参数，并让软门与坏行诊断可操作**——① `dk_put` 条目新增 `remove:true`（删卡但不碰 `.dkignore`、文件仍受管，补齐「无副作用删卡」）与 `from:<旧路径>`（显式改名：保留 F/R/A/S、重算 @hash、并改写全库指向旧路径的 R）；② `dk_check` 把坏行分类出 `repairable`（正文合法且 @src_hash 对得上源码、只是 #hash 被手改失配），CLI 加 `dk check --fix` 就地重签；③ `dk_check` 补软门告警段（兑现 §8 一直没实现的「写进去但 check 告警」），并让 `dk_put` 的软门只跑本批写入的卡、不再回吐全仓既有告警；④ `dk_get` 每张卡增结构化 `F/R/A/S/tags`，`dk_put` 增顶层 `dry_run`（只算不写）；⑤ 坏行报错加行内容摘要，`.dk/map.txt` 头加「请勿手改，用 dk put / dk check --fix」提醒。三处声明（serve.rs / mcp.rs / index.js）同步。 | 原缺口：代码库最常发生的变更之一是「文件换位置」，而 dk 此前只有「删卡进 ignore」（skip）一条删卡路，没有「删卡但仍受管」或「改名保留字段」的入口——搬迁时要么手改 map.txt（正是 #hash 要防的），要么留悬空 R。按 dk 自身理念（§0 零重建、A3 每断言机器可验），移动应可一次 `dk_put` 完成，无需第七个工具；软门与坏行诊断同属「说了做不到」，一并对齐实现。 |

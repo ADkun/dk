@@ -38,6 +38,9 @@ enum Cmd {
     Check {
         #[arg(long)]
         json: bool,
+        /// 就地修复「只差 #hash」的坏行（正文合法且 @src_hash 仍对得上源码）
+        #[arg(long)]
+        fix: bool,
     },
     /// 取全卡 + 同目录兄弟 + 新鲜度
     Get {
@@ -51,6 +54,9 @@ enum Cmd {
         /// 清掉索引里无法解析的历史坏行（默认保留，供人查看）
         #[arg(long)]
         drop_bad: bool,
+        /// 只算不写：打印将要 added / updated / removed / dropped 的结果，不落盘
+        #[arg(long)]
+        dry_run: bool,
     },
     /// 按任务检索；无参时给目录树
     Map {
@@ -114,8 +120,17 @@ fn run() -> Result<()> {
             }
             Ok(())
         }
-        Cmd::Check { json: as_json } => {
+        Cmd::Check { json: as_json, fix } => {
             serve::require_repo(&store)?;
+            if fix {
+                store.ensure_layout()?;
+                let _lock = Lock::acquire(store.dir(), Duration::from_secs(30))?;
+                let rr = check::repair(&store)?;
+                println!("修复 {} 行，未修复 {} 行", rr.repaired, rr.unrepaired);
+                for d in rr.details.iter().take(50) {
+                    println!("  {d}");
+                }
+            }
             let r = check::run(&store)?;
             if as_json {
                 println!("{}", serde_json::to_string_pretty(&r)?);
@@ -126,6 +141,7 @@ fn run() -> Result<()> {
                     ("失联（卡还在文件没了）", &r.missing),
                     ("坏 R", &r.bad_r),
                     ("坏行", &r.malformed),
+                    ("可修复坏行（dk check --fix）", &r.repairable),
                     ("重复卡", &r.duplicate),
                 ] {
                     if list.is_empty() {
@@ -146,6 +162,12 @@ fn run() -> Result<()> {
                         println!("  {x}");
                     }
                 }
+                if !r.soft_warnings.is_empty() {
+                    println!("\n软门告警（已写入，只是超建议长度，不阻断）：");
+                    for x in r.soft_warnings.iter().take(50) {
+                        println!("  {x}");
+                    }
+                }
             }
             if !r.is_clean() {
                 std::process::exit(1);
@@ -157,7 +179,11 @@ fn run() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&v)?);
             Ok(())
         }
-        Cmd::Put { file, drop_bad } => {
+        Cmd::Put {
+            file,
+            drop_bad,
+            dry_run,
+        } => {
             let raw = match file {
                 Some(p) => {
                     std::fs::read_to_string(&p).with_context(|| format!("读 {}", p.display()))?
@@ -180,9 +206,12 @@ fn run() -> Result<()> {
             // 先建目录再拿锁，否则没 init 的仓库只会得到一句「系统找不到指定的路径」。
             store.ensure_layout()?;
             let _lock = Lock::acquire(store.dir(), Duration::from_secs(30))?;
-            let opts = dk_core::store::PutOpts { drop_bad };
+            let opts = dk_core::store::PutOpts { drop_bad, dry_run };
             let rep = store.put(&entries, &dk_core::store::Limits::default(), opts)?;
             println!("{}", serde_json::to_string_pretty(&rep)?);
+            if dry_run {
+                eprintln!("dry_run：以上仅为预览，未写入索引（去掉 --dry-run 才落盘）");
+            }
             Ok(())
         }
         Cmd::Map {

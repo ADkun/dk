@@ -200,7 +200,7 @@ checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 
 [[package]]
 name = "dk"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "anyhow",
  "clap",
@@ -210,7 +210,7 @@ dependencies = [
 
 [[package]]
 name = "dk-core"
-version = "0.3.6"
+version = "0.3.7"
 dependencies = [
  "anyhow",
  "blake3",

@@ -121,7 +121,12 @@ impl Card {
                 actual,
             });
         }
+        Self::parse_body(body)
+    }
 
+    /// 解析不含行尾校验和的正文。`parse` 校验过 checksum 后调它；`dk check --fix` 也用它——
+    /// 从「#hash 失配但正文本身合法」的坏行里救回字段，重签一个正确的 #hash。
+    pub fn parse_body(body: &str) -> Result<Self, ParseError> {
         // 2. path@h8[:tags]:
         let at = body.find('@').ok_or(ParseError::MissingPath)?;
         let path = &body[..at];

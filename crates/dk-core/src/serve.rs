@@ -86,7 +86,7 @@ fn arg_keys(name: &str) -> &'static [&'static str] {
             "allow_partial",
         ],
         "get" => &["paths"],
-        "put" => &["entries", "drop_bad"],
+        "put" => &["entries", "drop_bad", "dry_run"],
         "sweep" => &["limit"],
         _ => &[],
     }
@@ -662,6 +662,12 @@ fn get(store: &Store, args: &Value) -> Result<Value> {
                     "path": c.path,
                     "state": freshness(store, c),
                     "card": c.render(),
+                    // 结构化字段：agent 不用再自己解析卡片行，直接读 F/R/A/S/tags。
+                    "F": c.f.clone(),
+                    "R": c.r.clone(),
+                    "A": c.a.clone(),
+                    "S": c.s.clone(),
+                    "tags": c.tags.clone(),
                     // 同目录兄弟：命中一个文件后，这一族往往要一起动。
                     "siblings": sib,
                 }));
@@ -675,7 +681,11 @@ fn put(store: &Store, args: &Value) -> Result<Value> {
     let raw = args
         .get("entries")
         .and_then(|v| v.as_array())
-        .ok_or_else(|| anyhow::anyhow!("需要 entries: [{{path, F?, R?, A?, S?, tags?, skip?}}]"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "需要 entries: [{{path, F?, R?, A?, S?, tags?, skip?, remove?, from?}}]"
+            )
+        })?;
     let entries: Vec<PutEntry> = serde_json::from_value(Value::Array(raw.clone()))
         .map_err(|e| anyhow::anyhow!("entries 格式错误：{e}"))?;
     // 先建目录再拿锁：否则没 init 的仓库会得到「create .dk\lock: 系统找不到指定的路径」。
@@ -684,6 +694,10 @@ fn put(store: &Store, args: &Value) -> Result<Value> {
     let opts = crate::store::PutOpts {
         drop_bad: args
             .get("drop_bad")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        dry_run: args
+            .get("dry_run")
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
     };
@@ -698,8 +712,15 @@ fn put(store: &Store, args: &Value) -> Result<Value> {
         "bad_lines_kept": rep.bad_lines_kept,
         "bad_lines_dropped": rep.bad_lines_dropped,
         "warnings": rep.warnings,
+        "dry_run": opts.dry_run,
         "coverage": cov.json(),
-        "next": if cov.uncarded > 0 { "dk_sweep 继续补齐" } else { "覆盖完整" },
+        "next": if opts.dry_run {
+            "dry_run：未落盘，去掉 dry_run 再跑一次才真正写入"
+        } else if cov.uncarded > 0 {
+            "dk_sweep 继续补齐"
+        } else {
+            "覆盖完整"
+        },
     }))
 }
 
@@ -734,6 +755,8 @@ fn check_tool(store: &Store) -> Result<Value> {
         "uncarded_sample": r.uncarded_sample,
         "bad_r": r.bad_r,
         "malformed": r.malformed,
+        "repairable": r.repairable,
+        "soft_warnings": r.soft_warnings,
         "duplicate": r.duplicate,
         "agents_block": r.agents_block,
         "summary": r.summary(),
